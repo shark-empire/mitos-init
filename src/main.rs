@@ -142,6 +142,8 @@ fn power_off() {
     }
 
     let Err(e) = nix::sys::reboot::reboot(nix::sys::reboot::RebootMode::RB_POWER_OFF);
-    logging::error(&format!("reboot(RB_POWER_OFF) failed: {e} - exiting instead"));
+    logging::error(&format!(
+        "reboot(RB_POWER_OFF) failed: {e} - exiting instead"
+    ));
     std::process::exit(0);
 }
