@@ -1,4 +1,4 @@
-# mitosOS-on-Linux
+# mitos-init
 
 `mitos-init` is the PID 1 process for MITOS: the first userspace program
 the kernel runs, responsible for preparing the environment and supervising
@@ -13,10 +13,19 @@ everything else that runs on top of it.
 | 2 - Signal handling | SIGTERM, SIGINT, SIGQUIT, SIGCHLD, SIGUSR1, SIGUSR2 | done |
 | 3 - Process supervision | spawn, restart policy, reap zombies | done |
 | Root switch | initramfs -> real root (`root=`/`rootfstype=`, move-mount, chroot) | done |
+| Hotplug | uevent listener for device permission fixups | done (small ruleset) |
 
 SIGUSR1 triggers a config reload (log level / hostname); SIGUSR2 dumps a
 status summary of supervised services to the log. SIGCHLD needs no explicit
 handler since the main loop already reaps via a blocking `waitpid()`.
+
+The hotplug listener runs on its own thread, so signal delivery is
+explicitly pinned to the main thread (`signals::block_handled` /
+`unblock_handled`) before it's spawned - otherwise a signal could land on
+the worker thread and never interrupt the main thread's `waitpid()`.
+
+CI (`.github/workflows/ci.yml`) runs `cargo fmt --check`, `cargo check`,
+and `cargo clippy -D warnings` on every push/PR.
 
 If mitos-init is launched from an initramfs, it mounts the real root named
 by the kernel's `root=` parameter, moves `/dev`, `/proc`, `/sys` into it,
@@ -35,10 +44,13 @@ initramfs stage), this whole step is skipped automatically.
 - `src/switch_root.rs` - initramfs -> real root switch
 - `src/cmdline.rs` - `/proc/cmdline` parser (used by switch_root)
 - `src/signals.rs` - Phase 2 signal handlers
+- `src/hotplug.rs` - uevent listener, fixes device permissions on hotplug
 - `src/supervisor.rs` - Phase 3 service spawning, restart policy, reaping
 - `src/config.rs` - parses `/etc/mitos/init.conf` (see `init.conf.example`)
 - `src/logging.rs` - dependency-free logger, writes to `/dev/kmsg` when available
 - `src/error.rs` - shared error type
+- `.github/workflows/ci.yml` - fmt/check/clippy on push and PR
+- `rustfmt.toml` - pins the 2021-edition formatting rules
 
 ## Build
 
