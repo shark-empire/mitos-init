@@ -1,10 +1,22 @@
 [package]
 name = "mitos-init"
-version = "0.1.0"
+version = "0.3.0"
 edition = "2021"
 authors = ["Your Name <babor3331@gmail.com>"]
 description = "The PID 1 initialization system for MITOS"
 
 [dependencies]
-# We will use the 'nix' crate later for system calls like mount() and waitpid()
-nix = { version = "0.27", features = ["process", "mount", "signal"] }
+nix = { version = "0.27", features = ["process", "mount", "signal", "reboot", "hostname", "fs"] }
+libc = "0.2"
+
+# This binary is the very first thing the kernel loads off disk, and it
+# never does anything compute-heavy (just syscalls: mount, spawn, waitpid) -
+# so a smaller, faster-to-load binary beats raw instruction throughput here.
+[profile.release]
+opt-level = "z"    # optimize for size over raw speed
+lto = true          # cross-crate inlining/dead-code elimination
+codegen-units = 1   # best optimization at the cost of build parallelism
+panic = "abort"     # no unwind tables; every fallible path here already
+                    # returns Result instead of panicking, so this is a
+                    # safety net, not a crutch
+strip = true        # drop symbols from the final binary

@@ -1,0 +1,22 @@
+# mitos-init configuration
+# Copy this to /etc/mitos/init.conf on the target rootfs.
+# Lines starting with # are comments. Unknown keys/fields are logged and
+# skipped rather than treated as fatal - a typo here shouldn't stop boot.
+
+hostname=mitos
+loglevel=info
+# How long (seconds) shutdown waits for services to exit after SIGTERM
+# before sending SIGKILL.
+shutdown_timeout=5
+
+# service <name> path=<binary> [args=a,b,c] [critical=true|false] [restart=always|on-failure|never]
+#   critical: if this service exits, mitos-init begins system shutdown.
+#             (critical services are never restarted - the exit is treated
+#             as "the session is over", the same way a login shell exiting
+#             ends the session.)
+#   restart:  what to do when a non-critical service exits.
+#             defaults to on-failure if omitted.
+service shell path=/bin/mitos-shell critical=true restart=never
+
+# Example of a second, non-critical, auto-restarting service:
+# service getty path=/sbin/mitos-getty args=115200,tty1 critical=false restart=always
