@@ -8,6 +8,7 @@
 mod cmdline;
 mod config;
 mod error;
+mod hotplug;
 mod logging;
 mod mount;
 mod signals;
@@ -57,9 +58,21 @@ fn main() {
     if let Err(e) = signals::install_handlers() {
         logging::error(&format!("failed to install signal handlers: {e}"));
     }
+    // Block the signals we handle on this (main) thread before spawning any
+    // worker threads, so they inherit the block and can't steal delivery
+    // from the thread that's actually waiting on it - see signals::block_handled.
+    if let Err(e) = signals::block_handled() {
+        logging::warn(&format!("failed to block signals ahead of worker threads: {e}"));
+    }
+
+    hotplug::spawn_listener();
 
     let mut sup = Supervisor::new();
     sup.spawn_all(&cfg.services);
+
+    if let Err(e) = signals::unblock_handled() {
+        logging::error(&format!("failed to unblock signals: {e}"));
+    }
 
     run_event_loop(&mut sup, Duration::from_secs(cfg.shutdown_timeout_secs));
 

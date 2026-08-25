@@ -7,7 +7,7 @@
 //! is about the only thing that's safe to do inside a signal handler.
 
 use crate::error::{InitError, Result};
-use nix::sys::signal::{self, SaFlags, SigAction, SigHandler, SigSet, Signal};
+use nix::sys::signal::{self, SaFlags, SigAction, SigHandler, SigSet, SigmaskHow, Signal};
 use std::sync::atomic::AtomicBool;
 
 pub static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
@@ -46,4 +46,32 @@ pub fn install_handlers() -> Result<()> {
         signal::sigaction(Signal::SIGUSR2, &action).map_err(InitError::Signal)?;
     }
     Ok(())
+}
+
+fn handled_set() -> SigSet {
+    let mut set = SigSet::empty();
+    set.add(Signal::SIGTERM);
+    set.add(Signal::SIGINT);
+    set.add(Signal::SIGQUIT);
+    set.add(Signal::SIGUSR1);
+    set.add(Signal::SIGUSR2);
+    set
+}
+
+/// Blocks the signals we handle on the *calling* thread only. A signal
+/// delivered to a multi-threaded process goes to an arbitrary thread that
+/// isn't blocking it - so once worker threads exist (e.g. the hotplug
+/// listener), an unlucky delivery to one of them would flip our atomic
+/// flags without ever unblocking the main thread's `waitpid()`, which is
+/// the only place that acts on them. Call this on the main thread *before*
+/// spawning any worker threads - they inherit the blocked mask at spawn
+/// time - then call `unblock_handled` on the main thread only, right
+/// before entering the event loop, so delivery is guaranteed to land
+/// there.
+pub fn block_handled() -> Result<()> {
+    signal::pthread_sigmask(SigmaskHow::SIG_BLOCK, Some(&handled_set()), None).map_err(InitError::Signal)
+}
+
+pub fn unblock_handled() -> Result<()> {
+    signal::pthread_sigmask(SigmaskHow::SIG_UNBLOCK, Some(&handled_set()), None).map_err(InitError::Signal)
 }
