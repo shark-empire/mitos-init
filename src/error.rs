@@ -9,7 +9,10 @@ use std::fmt;
 
 #[derive(Debug)]
 pub enum InitError {
-    Mount { target: String, source: nix::errno::Errno },
+    Mount {
+        target: String,
+        source: nix::errno::Errno,
+    },
     Io(std::io::Error),
     Signal(nix::errno::Errno),
     /// Catch-all for boot-sequencing failures (root switch, etc.) where the

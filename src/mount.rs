@@ -27,7 +27,9 @@ fn already_mounted(target: &str) -> bool {
     let Ok(mounts) = fs::read_to_string("/proc/mounts") else {
         return false;
     };
-    mounts.lines().any(|line| line.split_whitespace().nth(1) == Some(target))
+    mounts
+        .lines()
+        .any(|line| line.split_whitespace().nth(1) == Some(target))
 }
 
 fn do_mount(m: &VfsMount) -> Result<()> {
@@ -38,8 +40,12 @@ fn do_mount(m: &VfsMount) -> Result<()> {
         return Ok(());
     }
 
-    mount(Some(m.source), m.target, Some(m.fstype), m.flags, m.data)
-        .map_err(|e| InitError::Mount { target: m.target.to_string(), source: e })?;
+    mount(Some(m.source), m.target, Some(m.fstype), m.flags, m.data).map_err(|e| {
+        InitError::Mount {
+            target: m.target.to_string(),
+            source: e,
+        }
+    })?;
     logging::info(&format!("mounted {} ({})", m.target, m.fstype));
     Ok(())
 }
@@ -61,9 +67,27 @@ fn run_mounts(mounts: &[VfsMount]) -> Vec<InitError> {
 pub fn mount_early_vfs() -> Vec<InitError> {
     use MsFlags as F;
     let mounts = [
-        VfsMount { source: "devtmpfs", target: "/dev", fstype: "devtmpfs", flags: F::MS_NOSUID, data: Some("mode=755") },
-        VfsMount { source: "proc", target: "/proc", fstype: "proc", flags: F::MS_NOSUID | F::MS_NOEXEC | F::MS_NODEV, data: None },
-        VfsMount { source: "sysfs", target: "/sys", fstype: "sysfs", flags: F::MS_NOSUID | F::MS_NOEXEC | F::MS_NODEV, data: None },
+        VfsMount {
+            source: "devtmpfs",
+            target: "/dev",
+            fstype: "devtmpfs",
+            flags: F::MS_NOSUID,
+            data: Some("mode=755"),
+        },
+        VfsMount {
+            source: "proc",
+            target: "/proc",
+            fstype: "proc",
+            flags: F::MS_NOSUID | F::MS_NOEXEC | F::MS_NODEV,
+            data: None,
+        },
+        VfsMount {
+            source: "sysfs",
+            target: "/sys",
+            fstype: "sysfs",
+            flags: F::MS_NOSUID | F::MS_NOEXEC | F::MS_NODEV,
+            data: None,
+        },
     ];
     run_mounts(&mounts)
 }
@@ -71,10 +95,34 @@ pub fn mount_early_vfs() -> Vec<InitError> {
 pub fn mount_late_vfs() -> Vec<InitError> {
     use MsFlags as F;
     let mounts = [
-        VfsMount { source: "devpts", target: "/dev/pts", fstype: "devpts", flags: F::MS_NOSUID | F::MS_NOEXEC, data: Some("mode=620,gid=5") },
-        VfsMount { source: "tmpfs", target: "/dev/shm", fstype: "tmpfs", flags: F::MS_NOSUID | F::MS_NODEV, data: Some("mode=1777") },
-        VfsMount { source: "tmpfs", target: "/run", fstype: "tmpfs", flags: F::MS_NOSUID | F::MS_NODEV, data: Some("mode=755") },
-        VfsMount { source: "tmpfs", target: "/tmp", fstype: "tmpfs", flags: F::MS_NOSUID | F::MS_NODEV, data: Some("mode=1777") },
+        VfsMount {
+            source: "devpts",
+            target: "/dev/pts",
+            fstype: "devpts",
+            flags: F::MS_NOSUID | F::MS_NOEXEC,
+            data: Some("mode=620,gid=5"),
+        },
+        VfsMount {
+            source: "tmpfs",
+            target: "/dev/shm",
+            fstype: "tmpfs",
+            flags: F::MS_NOSUID | F::MS_NODEV,
+            data: Some("mode=1777"),
+        },
+        VfsMount {
+            source: "tmpfs",
+            target: "/run",
+            fstype: "tmpfs",
+            flags: F::MS_NOSUID | F::MS_NODEV,
+            data: Some("mode=755"),
+        },
+        VfsMount {
+            source: "tmpfs",
+            target: "/tmp",
+            fstype: "tmpfs",
+            flags: F::MS_NOSUID | F::MS_NODEV,
+            data: Some("mode=1777"),
+        },
     ];
     run_mounts(&mounts)
 }

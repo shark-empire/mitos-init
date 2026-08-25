@@ -51,7 +51,11 @@ fn run() -> io::Result<()> {
 
 fn open_socket() -> io::Result<RawFd> {
     unsafe {
-        let fd = libc::socket(libc::AF_NETLINK, libc::SOCK_RAW | libc::SOCK_CLOEXEC, NETLINK_KOBJECT_UEVENT);
+        let fd = libc::socket(
+            libc::AF_NETLINK,
+            libc::SOCK_RAW | libc::SOCK_CLOEXEC,
+            NETLINK_KOBJECT_UEVENT,
+        );
         if fd < 0 {
             return Err(io::Error::last_os_error());
         }
@@ -80,8 +84,12 @@ fn handle_event(raw: &[u8]) {
     if fields.get("ACTION").map(String::as_str) != Some("add") {
         return; // only fixing up permissions on arrival for now
     }
-    let Some(subsystem) = fields.get("SUBSYSTEM") else { return };
-    let Some(devname) = fields.get("DEVNAME") else { return };
+    let Some(subsystem) = fields.get("SUBSYSTEM") else {
+        return;
+    };
+    let Some(devname) = fields.get("DEVNAME") else {
+        return;
+    };
 
     for (rule_subsystem, mode) in RULES {
         if subsystem.as_str() == *rule_subsystem {
@@ -96,7 +104,9 @@ fn handle_event(raw: &[u8]) {
 fn parse_event(raw: &[u8]) -> HashMap<String, String> {
     let mut map = HashMap::new();
     for chunk in raw.split(|&b| b == 0) {
-        let Ok(s) = std::str::from_utf8(chunk) else { continue };
+        let Ok(s) = std::str::from_utf8(chunk) else {
+            continue;
+        };
         if let Some((k, v)) = s.split_once('=') {
             map.insert(k.to_string(), v.to_string());
         }
@@ -106,12 +116,17 @@ fn parse_event(raw: &[u8]) -> HashMap<String, String> {
 
 fn apply_permissions(devname: &str, mode: u32) {
     let path = format!("/dev/{devname}");
-    let Ok(c_path) = CString::new(path.clone()) else { return };
+    let Ok(c_path) = CString::new(path.clone()) else {
+        return;
+    };
 
     let ok = unsafe { libc::chmod(c_path.as_ptr(), mode) == 0 };
     if ok {
         logging::debug(&format!("hotplug: set {path} to mode {mode:o}"));
     } else {
-        logging::debug(&format!("hotplug: chmod {path} failed: {}", io::Error::last_os_error()));
+        logging::debug(&format!(
+            "hotplug: chmod {path} failed: {}",
+            io::Error::last_os_error()
+        ));
     }
 }

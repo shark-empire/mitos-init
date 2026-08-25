@@ -28,7 +28,9 @@ fn main() {
     logging::info("mitos-init starting");
 
     if nix::unistd::getpid().as_raw() != 1 {
-        logging::warn("not running as PID 1 - mount/reboot calls will likely fail; continuing anyway");
+        logging::warn(
+            "not running as PID 1 - mount/reboot calls will likely fail; continuing anyway",
+        );
     }
 
     for err in mount::mount_early_vfs() {
@@ -38,7 +40,9 @@ fn main() {
     if switch_root::needed() {
         match switch_root::perform() {
             Ok(()) => logging::info("now running from the real root filesystem"),
-            Err(e) => logging::error(&format!("root switch failed, continuing from initramfs: {e}")),
+            Err(e) => logging::error(&format!(
+                "root switch failed, continuing from initramfs: {e}"
+            )),
         }
     }
 
@@ -62,7 +66,9 @@ fn main() {
     // worker threads, so they inherit the block and can't steal delivery
     // from the thread that's actually waiting on it - see signals::block_handled.
     if let Err(e) = signals::block_handled() {
-        logging::warn(&format!("failed to block signals ahead of worker threads: {e}"));
+        logging::warn(&format!(
+            "failed to block signals ahead of worker threads: {e}"
+        ));
     }
 
     hotplug::spawn_listener();
@@ -135,8 +141,7 @@ fn power_off() {
         libc::sync();
     }
 
-    if let Err(e) = nix::sys::reboot::reboot(nix::sys::reboot::RebootMode::RB_POWER_OFF) {
-        logging::error(&format!("reboot(RB_POWER_OFF) failed: {e} - exiting instead"));
-    }
+    let Err(e) = nix::sys::reboot::reboot(nix::sys::reboot::RebootMode::RB_POWER_OFF);
+    logging::error(&format!("reboot(RB_POWER_OFF) failed: {e} - exiting instead"));
     std::process::exit(0);
 }

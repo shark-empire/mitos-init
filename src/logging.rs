@@ -49,7 +49,10 @@ pub fn set_level(level: Level) {
 }
 
 fn uptime_secs() -> f64 {
-    BOOT_CLOCK.get().map(|t| t.elapsed().as_secs_f64()).unwrap_or(0.0)
+    BOOT_CLOCK
+        .get()
+        .map(|t| t.elapsed().as_secs_f64())
+        .unwrap_or(0.0)
 }
 
 fn write_line(level: Level, tag: &str, msg: &str) {

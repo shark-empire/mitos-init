@@ -34,7 +34,9 @@ pub struct Supervisor {
 
 impl Supervisor {
     pub fn new() -> Self {
-        Supervisor { services: HashMap::new() }
+        Supervisor {
+            services: HashMap::new(),
+        }
     }
 
     pub fn spawn_all(&mut self, defs: &[ServiceDef]) {
@@ -47,11 +49,17 @@ impl Supervisor {
         match Command::new(&def.path).args(&def.args).spawn() {
             Ok(child) => {
                 let pid = child.id() as i32;
-                logging::info(&format!("started '{}' ({}) as pid {pid}", def.name, def.path));
+                logging::info(&format!(
+                    "started '{}' ({}) as pid {pid}",
+                    def.name, def.path
+                ));
                 self.services.insert(pid, Supervised { def, restart_times });
             }
             Err(e) => {
-                logging::error(&format!("failed to start '{}' ({}): {e}", def.name, def.path));
+                logging::error(&format!(
+                    "failed to start '{}' ({}): {e}",
+                    def.name, def.path
+                ));
                 // A critical service that won't even start leaves the
                 // machine unreachable — fall back to a rescue shell rather
                 // than continue with no console at all.
@@ -59,7 +67,13 @@ impl Supervisor {
                     if let Ok(child) = Command::new("/bin/sh").spawn() {
                         let pid = child.id() as i32;
                         logging::warn("fell back to /bin/sh");
-                        self.services.insert(pid, Supervised { def: fallback_shell(), restart_times: Vec::new() });
+                        self.services.insert(
+                            pid,
+                            Supervised {
+                                def: fallback_shell(),
+                                restart_times: Vec::new(),
+                            },
+                        );
                     }
                 }
             }
@@ -71,7 +85,9 @@ impl Supervisor {
     pub fn handle_exit(&mut self, status: WaitStatus) -> Outcome {
         let (pid, summary) = match status {
             WaitStatus::Exited(pid, code) => (pid.as_raw(), format!("exited with status {code}")),
-            WaitStatus::Signaled(pid, sig, _) => (pid.as_raw(), format!("killed by signal {sig:?}")),
+            WaitStatus::Signaled(pid, sig, _) => {
+                (pid.as_raw(), format!("killed by signal {sig:?}"))
+            }
             _ => return Outcome::Continue, // Stopped/Continued/etc: not a real exit
         };
 
@@ -121,7 +137,10 @@ impl Supervisor {
 
         let deadline = Instant::now() + grace;
         while Instant::now() < deadline && !self.services.is_empty() {
-            match nix::sys::wait::waitpid(Pid::from_raw(-1), Some(nix::sys::wait::WaitPidFlag::WNOHANG)) {
+            match nix::sys::wait::waitpid(
+                Pid::from_raw(-1),
+                Some(nix::sys::wait::WaitPidFlag::WNOHANG),
+            ) {
                 Ok(WaitStatus::Exited(pid, _)) | Ok(WaitStatus::Signaled(pid, _, _)) => {
                     self.services.remove(&pid.as_raw());
                 }
@@ -145,7 +164,10 @@ impl Supervisor {
         let mut lines = vec![format!("{} supervised service(s):", self.services.len())];
         for (pid, sup) in &self.services {
             let crit = if sup.def.critical { " [critical]" } else { "" };
-            lines.push(format!("  pid {pid}: {} ({}){crit}", sup.def.name, sup.def.path));
+            lines.push(format!(
+                "  pid {pid}: {} ({}){crit}",
+                sup.def.name, sup.def.path
+            ));
         }
         lines.join("\n")
     }

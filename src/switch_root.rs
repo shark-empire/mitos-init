@@ -99,18 +99,37 @@ fn mount_root(device: &str, target: &str, explicit_fstype: Option<&str>) -> Resu
     fs::create_dir_all(target).map_err(InitError::Io)?;
 
     if let Some(fstype) = explicit_fstype {
-        return mount(Some(device), target, Some(fstype), MsFlags::empty(), None::<&str>)
-            .map_err(|e| InitError::Mount { target: target.to_string(), source: e });
+        return mount(
+            Some(device),
+            target,
+            Some(fstype),
+            MsFlags::empty(),
+            None::<&str>,
+        )
+        .map_err(|e| InitError::Mount {
+            target: target.to_string(),
+            source: e,
+        });
     }
 
     for fstype in candidate_fstypes() {
-        if mount(Some(device), target, Some(fstype.as_str()), MsFlags::empty(), None::<&str>).is_ok() {
+        if mount(
+            Some(device),
+            target,
+            Some(fstype.as_str()),
+            MsFlags::empty(),
+            None::<&str>,
+        )
+        .is_ok()
+        {
             logging::info(&format!("mounted root {device} as {fstype}"));
             return Ok(());
         }
     }
 
-    Err(InitError::Boot(format!("couldn't mount {device} as any known filesystem type")))
+    Err(InitError::Boot(format!(
+        "couldn't mount {device} as any known filesystem type"
+    )))
 }
 
 /// Moves an already-mounted filesystem from its current location under `/`
@@ -123,8 +142,17 @@ fn move_mount(name: &str) -> Result<()> {
         return Ok(()); // wasn't mounted yet; mount::mount_late_vfs handles it after the switch
     }
     fs::create_dir_all(&new).map_err(InitError::Io)?;
-    mount(Some(old.as_str()), new.as_str(), None::<&str>, MsFlags::MS_MOVE, None::<&str>)
-        .map_err(|e| InitError::Mount { target: new, source: e })
+    mount(
+        Some(old.as_str()),
+        new.as_str(),
+        None::<&str>,
+        MsFlags::MS_MOVE,
+        None::<&str>,
+    )
+    .map_err(|e| InitError::Mount {
+        target: new,
+        source: e,
+    })
 }
 
 /// Best-effort recursive delete of the old initramfs content once it's
@@ -136,19 +164,32 @@ fn move_mount(name: &str) -> Result<()> {
 fn cleanup_initramfs() {
     use std::os::unix::fs::MetadataExt;
 
-    let Ok(root_meta) = fs::metadata("/") else { return };
+    let Ok(root_meta) = fs::metadata("/") else {
+        return;
+    };
     let root_dev = root_meta.dev();
 
-    let Ok(entries) = fs::read_dir("/") else { return };
+    let Ok(entries) = fs::read_dir("/") else {
+        return;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
-        let Ok(meta) = fs::symlink_metadata(&path) else { continue };
+        let Ok(meta) = fs::symlink_metadata(&path) else {
+            continue;
+        };
         if meta.dev() != root_dev {
             continue; // separate mounted filesystem - leave it alone
         }
-        let result = if meta.is_dir() { fs::remove_dir_all(&path) } else { fs::remove_file(&path) };
+        let result = if meta.is_dir() {
+            fs::remove_dir_all(&path)
+        } else {
+            fs::remove_file(&path)
+        };
         if let Err(e) = result {
-            logging::debug(&format!("initramfs cleanup: couldn't remove {}: {e}", path.display()));
+            logging::debug(&format!(
+                "initramfs cleanup: couldn't remove {}: {e}",
+                path.display()
+            ));
         }
     }
 }
@@ -171,8 +212,12 @@ pub fn perform() -> Result<()> {
     cleanup_initramfs();
 
     chdir(NEW_ROOT).map_err(|e| InitError::Boot(format!("chdir({NEW_ROOT}) failed: {e}")))?;
-    mount(Some("."), "/", None::<&str>, MsFlags::MS_MOVE, None::<&str>)
-        .map_err(|e| InitError::Mount { target: "/".to_string(), source: e })?;
+    mount(Some("."), "/", None::<&str>, MsFlags::MS_MOVE, None::<&str>).map_err(|e| {
+        InitError::Mount {
+            target: "/".to_string(),
+            source: e,
+        }
+    })?;
     chroot(".").map_err(|e| InitError::Boot(format!("chroot failed: {e}")))?;
     chdir("/").map_err(|e| InitError::Boot(format!("chdir(/) after chroot failed: {e}")))?;
 

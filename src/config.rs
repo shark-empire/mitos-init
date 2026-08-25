@@ -60,7 +60,10 @@ pub fn load_or_default(path: &str) -> Config {
 }
 
 fn parse(text: &str) -> Config {
-    let mut cfg = Config { services: Vec::new(), ..Config::default() };
+    let mut cfg = Config {
+        services: Vec::new(),
+        ..Config::default()
+    };
 
     for raw_line in text.lines() {
         let line = raw_line.trim();
@@ -112,11 +115,19 @@ fn parse_service(rest: &str) -> std::result::Result<ServiceDef, String> {
     let mut restart = RestartPolicy::OnFailure;
 
     for field in parts {
-        let (key, value) = field.split_once('=').ok_or_else(|| format!("bad field '{field}'"))?;
+        let (key, value) = field
+            .split_once('=')
+            .ok_or_else(|| format!("bad field '{field}'"))?;
         let value = value.trim_matches('"');
         match key {
             "path" => path = Some(value.to_string()),
-            "args" => args = value.split(',').filter(|s| !s.is_empty()).map(String::from).collect(),
+            "args" => {
+                args = value
+                    .split(',')
+                    .filter(|s| !s.is_empty())
+                    .map(String::from)
+                    .collect()
+            }
             "critical" => critical = value.eq_ignore_ascii_case("true"),
             "restart" => {
                 restart = match value {
@@ -130,5 +141,11 @@ fn parse_service(rest: &str) -> std::result::Result<ServiceDef, String> {
     }
 
     let path = path.ok_or("missing path=")?;
-    Ok(ServiceDef { name, path, args, critical, restart })
+    Ok(ServiceDef {
+        name,
+        path,
+        args,
+        critical,
+        restart,
+    })
 }

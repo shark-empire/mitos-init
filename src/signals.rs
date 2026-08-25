@@ -18,7 +18,10 @@ pub static STATUS_DUMP_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 extern "C" fn on_signal(raw: i32) {
     use std::sync::atomic::Ordering::SeqCst;
-    if raw == Signal::SIGTERM as i32 || raw == Signal::SIGINT as i32 || raw == Signal::SIGQUIT as i32 {
+    if raw == Signal::SIGTERM as i32
+        || raw == Signal::SIGINT as i32
+        || raw == Signal::SIGQUIT as i32
+    {
         SHUTDOWN_REQUESTED.store(true, SeqCst);
     } else if raw == Signal::SIGUSR1 as i32 {
         RELOAD_REQUESTED.store(true, SeqCst);
@@ -37,7 +40,11 @@ extern "C" fn on_signal(raw: i32) {
 /// loop promptly checks the flags above instead of waiting for the next
 /// child to exit first.
 pub fn install_handlers() -> Result<()> {
-    let action = SigAction::new(SigHandler::Handler(on_signal), SaFlags::empty(), SigSet::empty());
+    let action = SigAction::new(
+        SigHandler::Handler(on_signal),
+        SaFlags::empty(),
+        SigSet::empty(),
+    );
     unsafe {
         signal::sigaction(Signal::SIGTERM, &action).map_err(InitError::Signal)?;
         signal::sigaction(Signal::SIGINT, &action).map_err(InitError::Signal)?;
@@ -69,9 +76,11 @@ fn handled_set() -> SigSet {
 /// before entering the event loop, so delivery is guaranteed to land
 /// there.
 pub fn block_handled() -> Result<()> {
-    signal::pthread_sigmask(SigmaskHow::SIG_BLOCK, Some(&handled_set()), None).map_err(InitError::Signal)
+    signal::pthread_sigmask(SigmaskHow::SIG_BLOCK, Some(&handled_set()), None)
+        .map_err(InitError::Signal)
 }
 
 pub fn unblock_handled() -> Result<()> {
-    signal::pthread_sigmask(SigmaskHow::SIG_UNBLOCK, Some(&handled_set()), None).map_err(InitError::Signal)
+    signal::pthread_sigmask(SigmaskHow::SIG_UNBLOCK, Some(&handled_set()), None)
+        .map_err(InitError::Signal)
 }
