@@ -1,87 +1,129 @@
-use nix::mount::{mount, MsFlags};
-use nix::sys::wait::{waitpid, WaitStatus};
+//! mitos-init — the PID 1 process for MITOS.
+//!
+//! Boot sequence: mount the virtual filesystem tree (Phase 1), load config
+//! and install signal handlers (Phase 0/2), spawn the configured services
+//! (Phase 3), then sit in an event loop reaping children and reacting to
+//! signals until it's time to shut down.
+
+mod cmdline;
+mod config;
+mod error;
+mod logging;
+mod mount;
+mod signals;
+mod supervisor;
+mod switch_root;
+
+use nix::sys::wait::waitpid;
 use nix::unistd::Pid;
-use std::fs;
-use std::process::Command;
+use std::sync::atomic::Ordering;
+use std::time::Duration;
+use supervisor::{Outcome, Supervisor};
 
-/// Mounts the essential virtual filesystems required by Linux userspace.
-fn mount_vfs() {
-    let mounts = [
-        ("devtmpfs", "/dev", "devtmpfs"),
-        ("proc", "/proc", "proc"),
-        ("sysfs", "/sys", "sysfs"),
-    ];
-
-    for (src, target, fstype) in mounts.iter() {
-        // Ensure the mount point exists
-        let _ = fs::create_dir_all(target);
-
-        if let Err(e) = mount(
-            Some(*src),
-            *target,
-            Some(*fstype),
-            MsFlags::empty(),
-            None::<&str>,
-        ) {
-            eprintln!("mitos-init [WARN]: Failed to mount {} - {}", target, e);
-        } else {
-            println!("mitos-init [OK]: Mounted {}", target);
-        }
-    }
-}
+const CONFIG_PATH: &str = "/etc/mitos/init.conf";
 
 fn main() {
-    if std::process::id() != 1 {
-        eprintln!("mitos-init [WARN]: Running outside of PID 1. System calls may fail.");
+    logging::init();
+    logging::info("mitos-init starting");
+
+    if nix::unistd::getpid().as_raw() != 1 {
+        logging::warn("not running as PID 1 - mount/reboot calls will likely fail; continuing anyway");
     }
 
-    println!("Starting MITOS Initialization...");
-    
-    // 1. Prepare the kernel environment
-    mount_vfs();
+    for err in mount::mount_early_vfs() {
+        logging::warn(&format!("continuing despite mount failure: {err}"));
+    }
 
-    // 2. Spawn the primary user environment (Shell or GUI)
-    println!("mitos-init [INFO]: Launching mitos-shell...");
-    let mut shell = Command::new("/bin/mitos-shell")
-        .spawn()
-        .unwrap_or_else(|_| {
-            eprintln!("mitos-init [FAIL]: /bin/mitos-shell not found. Falling back to /bin/sh.");
-            Command::new("/bin/sh").spawn().expect("Failed to execute fallback shell")
-        });
-
-    let shell_pid = Pid::from_raw(shell.id() as i32);
-
-    // 3. The Infinite Reaper Loop
-    // PID 1 must wait on ALL orphaned child processes to prevent zombie exhaustion.
-    loop {
-        // waitpid with -1 waits for ANY child process. 
-        match waitpid(Pid::from_raw(-1), None) {
-            Ok(WaitStatus::Exited(pid, status)) => {
-                if pid == shell_pid {
-                    println!("mitos-init [INFO]: Primary shell exited (Status: {}). Halting.", status);
-                    break; 
-                }
-            },
-            Ok(WaitStatus::Signaled(pid, signal, _)) => {
-                if pid == shell_pid {
-                    println!("mitos-init [FATAL]: Primary shell killed by signal {:?}. Halting.", signal);
-                    break;
-                }
-            },
-            Ok(_) => {
-                // Another orphaned process was cleanly reaped. Continue looping.
-            },
-            Err(e) => {
-                eprintln!("mitos-init [ERROR]: waitpid failed: {}", e);
-            }
+    if switch_root::needed() {
+        match switch_root::perform() {
+            Ok(()) => logging::info("now running from the real root filesystem"),
+            Err(e) => logging::error(&format!("root switch failed, continuing from initramfs: {e}")),
         }
     }
 
-    // In a real shutdown sequence, you would unmount filesystems and call sync() here.
-    println!("MITOS halted.");
-    
-    // Halt the kernel gracefully using the reboot system call (LINUX_REBOOT_CMD_POWER_OFF)
-    // For now, exiting PID 1 will cause a kernel panic (which acts as a hard halt).
-    std::process::exit(0);
+    for err in mount::mount_late_vfs() {
+        logging::warn(&format!("continuing despite mount failure: {err}"));
+    }
+
+    let cfg = config::load_or_default(CONFIG_PATH);
+    logging::set_level(cfg.loglevel);
+
+    if let Some(hostname) = &cfg.hostname {
+        if let Err(e) = nix::unistd::sethostname(hostname) {
+            logging::warn(&format!("failed to set hostname to '{hostname}': {e}"));
+        }
+    }
+
+    if let Err(e) = signals::install_handlers() {
+        logging::error(&format!("failed to install signal handlers: {e}"));
+    }
+
+    let mut sup = Supervisor::new();
+    sup.spawn_all(&cfg.services);
+
+    run_event_loop(&mut sup, Duration::from_secs(cfg.shutdown_timeout_secs));
+
+    power_off();
 }
 
+/// The core PID 1 loop: block in `waitpid` reaping whatever exits (tracked
+/// services and reparented orphans alike), and bail out to shut down when
+/// either a critical service dies or a shutdown signal arrives. SIGUSR1/
+/// SIGUSR2 are handled here too since they need to log and touch the
+/// supervisor, neither of which is safe from inside a signal handler.
+fn run_event_loop(sup: &mut Supervisor, shutdown_grace: Duration) {
+    loop {
+        if signals::SHUTDOWN_REQUESTED.swap(false, Ordering::SeqCst) {
+            logging::info("shutdown signal received, stopping services");
+            sup.shutdown_all(shutdown_grace);
+            return;
+        }
+
+        if signals::RELOAD_REQUESTED.swap(false, Ordering::SeqCst) {
+            logging::info("SIGUSR1: reloading config");
+            let cfg = config::load_or_default(CONFIG_PATH);
+            logging::set_level(cfg.loglevel);
+            if let Some(h) = &cfg.hostname {
+                if let Err(e) = nix::unistd::sethostname(h) {
+                    logging::warn(&format!("failed to apply reloaded hostname: {e}"));
+                }
+            }
+        }
+
+        if signals::STATUS_DUMP_REQUESTED.swap(false, Ordering::SeqCst) {
+            logging::info(&sup.status_summary());
+        }
+
+        match waitpid(Pid::from_raw(-1), None) {
+            Ok(status) => {
+                if matches!(sup.handle_exit(status), Outcome::Halt) {
+                    logging::info("critical service exited, shutting down");
+                    sup.shutdown_all(shutdown_grace);
+                    return;
+                }
+            }
+            Err(nix::errno::Errno::EINTR) => continue,
+            Err(nix::errno::Errno::ECHILD) => {
+                logging::warn("no children left to wait for");
+                std::thread::sleep(Duration::from_secs(1));
+            }
+            Err(e) => logging::error(&format!("waitpid failed: {e}")),
+        }
+    }
+}
+
+/// Syncs disks and asks the kernel to power off. On real hardware/VMs
+/// running as actual PID 1 this doesn't return. Anywhere else (a dev
+/// container, running as a normal process) it fails with EPERM - that's
+/// expected there, and we just exit instead.
+fn power_off() {
+    logging::info("mitos-init halted, powering off");
+    unsafe {
+        libc::sync();
+    }
+
+    if let Err(e) = nix::sys::reboot::reboot(nix::sys::reboot::RebootMode::RB_POWER_OFF) {
+        logging::error(&format!("reboot(RB_POWER_OFF) failed: {e} - exiting instead"));
+    }
+    std::process::exit(0);
+}
