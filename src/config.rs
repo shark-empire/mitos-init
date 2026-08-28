@@ -105,6 +105,24 @@ fn parse(text: &str) -> Config {
     cfg
 }
 
+/// Merges services from `init.conf`'s inline `service` lines with those
+/// loaded from `/etc/mitos/services.d/*.service` unit files (see
+/// `units.rs`). A name collision keeps whichever was seen first and warns
+/// about the rest, rather than silently letting one replace the other.
+pub fn merge_services(mut base: Vec<ServiceDef>, extra: Vec<ServiceDef>) -> Vec<ServiceDef> {
+    for svc in extra {
+        if base.iter().any(|s| s.name == svc.name) {
+            eprintln!(
+                "mitos-init [WARN]: duplicate service name '{}', keeping the first one seen",
+                svc.name
+            );
+        } else {
+            base.push(svc);
+        }
+    }
+    base
+}
+
 fn parse_service(rest: &str) -> std::result::Result<ServiceDef, String> {
     let mut parts = rest.split_whitespace();
     let name = parts.next().ok_or("missing service name")?.to_string();

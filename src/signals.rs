@@ -5,12 +5,25 @@
 //! is required to reap SIGCHLD so children never linger as zombies. The
 //! handlers below only touch `AtomicBool`s — no allocation, no I/O — which
 //! is about the only thing that's safe to do inside a signal handler.
+//!
+//! The three shutdown-family signals map to three distinct end states,
+//! matching the classic sysvinit convention that the kernel itself still
+//! follows: pressing Ctrl-Alt-Del makes the kernel send PID 1 a SIGINT,
+//! traditionally meaning "reboot" (not just "shut down"). SIGTERM
+//! (general graceful shutdown) means power off; SIGQUIT means halt
+//! without powering off. The `reboot`/`poweroff`/`halt`/`shutdown`
+//! companion binaries (`src/bin/`) just send the matching signal here.
 
 use crate::error::{InitError, Result};
 use nix::sys::signal::{self, SaFlags, SigAction, SigHandler, SigSet, SigmaskHow, Signal};
 use std::sync::atomic::AtomicBool;
 
-pub static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
+/// SIGINT - matches the kernel's Ctrl-Alt-Del convention.
+pub static REBOOT_REQUESTED: AtomicBool = AtomicBool::new(false);
+/// SIGTERM - general graceful shutdown.
+pub static POWEROFF_REQUESTED: AtomicBool = AtomicBool::new(false);
+/// SIGQUIT - halt without cutting power.
+pub static HALT_REQUESTED: AtomicBool = AtomicBool::new(false);
 /// SIGUSR1: reload `/etc/mitos/init.conf` (log level, hostname) without a reboot.
 pub static RELOAD_REQUESTED: AtomicBool = AtomicBool::new(false);
 /// SIGUSR2: dump a one-line status summary of supervised services to the log.
@@ -18,11 +31,12 @@ pub static STATUS_DUMP_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 extern "C" fn on_signal(raw: i32) {
     use std::sync::atomic::Ordering::SeqCst;
-    if raw == Signal::SIGTERM as i32
-        || raw == Signal::SIGINT as i32
-        || raw == Signal::SIGQUIT as i32
-    {
-        SHUTDOWN_REQUESTED.store(true, SeqCst);
+    if raw == Signal::SIGINT as i32 {
+        REBOOT_REQUESTED.store(true, SeqCst);
+    } else if raw == Signal::SIGTERM as i32 {
+        POWEROFF_REQUESTED.store(true, SeqCst);
+    } else if raw == Signal::SIGQUIT as i32 {
+        HALT_REQUESTED.store(true, SeqCst);
     } else if raw == Signal::SIGUSR1 as i32 {
         RELOAD_REQUESTED.store(true, SeqCst);
     } else if raw == Signal::SIGUSR2 as i32 {

@@ -11,6 +11,8 @@ use crate::error::{InitError, Result};
 use crate::logging;
 use nix::mount::{mount, MsFlags};
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
+use std::path::Path;
 
 struct VfsMount {
     source: &'static str,
@@ -125,4 +127,41 @@ pub fn mount_late_vfs() -> Vec<InitError> {
         },
     ];
     run_mounts(&mounts)
+}
+
+/// Populates the parts of the FHS tree that only make sense fresh per
+/// boot, since `/run` is a brand-new tmpfs every time: `/run/lock` for
+/// advisory file locks, plus the `/var/run` and `/var/lock` compatibility
+/// symlinks most tooling still expects (per current FHS/systemd
+/// convention, `/var/run` and `/var/lock` are symlinks into `/run`, not
+/// real directories). Broader FHS layout - `/usr`, `/opt`, `/srv`, and so
+/// on - is a rootfs-build concern, not something init creates at boot.
+pub fn populate_run() {
+    match fs::create_dir_all("/run/lock") {
+        Ok(()) => {
+            let _ = fs::set_permissions("/run/lock", fs::Permissions::from_mode(0o1777));
+        }
+        Err(e) => logging::warn(&format!("couldn't create /run/lock: {e}")),
+    }
+
+    ensure_compat_symlink("/var/run", "/run");
+    ensure_compat_symlink("/var/lock", "/run/lock");
+}
+
+/// Creates `link -> target` only if `link` doesn't already exist. If it
+/// exists and isn't a symlink (a real distro-provided directory, say),
+/// it's left alone rather than clobbered.
+fn ensure_compat_symlink(link: &str, target: &str) {
+    match fs::symlink_metadata(link) {
+        Ok(meta) if meta.file_type().is_symlink() => {} // already set up
+        Ok(_) => logging::debug(&format!("{link} exists and isn't a symlink, leaving it alone")),
+        Err(_) => {
+            if let Some(parent) = Path::new(link).parent() {
+                let _ = fs::create_dir_all(parent);
+            }
+            if let Err(e) = std::os::unix::fs::symlink(target, link) {
+                logging::warn(&format!("couldn't create {link} -> {target}: {e}"));
+            }
+        }
+    }
 }

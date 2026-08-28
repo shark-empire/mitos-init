@@ -14,6 +14,8 @@ mod mount;
 mod signals;
 mod supervisor;
 mod switch_root;
+mod units;
+mod utmp;
 
 use nix::sys::wait::waitpid;
 use nix::unistd::Pid;
@@ -49,8 +51,10 @@ fn main() {
     for err in mount::mount_late_vfs() {
         logging::warn(&format!("continuing despite mount failure: {err}"));
     }
+    mount::populate_run();
 
-    let cfg = config::load_or_default(CONFIG_PATH);
+    let mut cfg = config::load_or_default(CONFIG_PATH);
+    cfg.services = config::merge_services(cfg.services, units::load_all());
     logging::set_level(cfg.loglevel);
 
     if let Some(hostname) = &cfg.hostname {
@@ -58,6 +62,8 @@ fn main() {
             logging::warn(&format!("failed to set hostname to '{hostname}': {e}"));
         }
     }
+
+    utmp::log_boot();
 
     if let Err(e) = signals::install_handlers() {
         logging::error(&format!("failed to install signal handlers: {e}"));
@@ -80,9 +86,18 @@ fn main() {
         logging::error(&format!("failed to unblock signals: {e}"));
     }
 
-    run_event_loop(&mut sup, Duration::from_secs(cfg.shutdown_timeout_secs));
+    let kind = run_event_loop(&mut sup, Duration::from_secs(cfg.shutdown_timeout_secs));
 
-    power_off();
+    finish(kind);
+}
+
+/// Which of the three end states the event loop is exiting toward -
+/// distinct because `reboot`, `poweroff`, and `halt` all end boot
+/// differently (see `signals.rs` for how each one gets triggered).
+enum ShutdownKind {
+    Reboot,
+    PowerOff,
+    Halt,
 }
 
 /// The core PID 1 loop: block in `waitpid` reaping whatever exits (tracked
@@ -90,17 +105,28 @@ fn main() {
 /// either a critical service dies or a shutdown signal arrives. SIGUSR1/
 /// SIGUSR2 are handled here too since they need to log and touch the
 /// supervisor, neither of which is safe from inside a signal handler.
-fn run_event_loop(sup: &mut Supervisor, shutdown_grace: Duration) {
+fn run_event_loop(sup: &mut Supervisor, shutdown_grace: Duration) -> ShutdownKind {
     loop {
-        if signals::SHUTDOWN_REQUESTED.swap(false, Ordering::SeqCst) {
-            logging::info("shutdown signal received, stopping services");
+        if signals::REBOOT_REQUESTED.swap(false, Ordering::SeqCst) {
+            logging::info("SIGINT received (reboot) - stopping services");
             sup.shutdown_all(shutdown_grace);
-            return;
+            return ShutdownKind::Reboot;
+        }
+        if signals::POWEROFF_REQUESTED.swap(false, Ordering::SeqCst) {
+            logging::info("SIGTERM received (poweroff) - stopping services");
+            sup.shutdown_all(shutdown_grace);
+            return ShutdownKind::PowerOff;
+        }
+        if signals::HALT_REQUESTED.swap(false, Ordering::SeqCst) {
+            logging::info("SIGQUIT received (halt) - stopping services");
+            sup.shutdown_all(shutdown_grace);
+            return ShutdownKind::Halt;
         }
 
         if signals::RELOAD_REQUESTED.swap(false, Ordering::SeqCst) {
             logging::info("SIGUSR1: reloading config");
-            let cfg = config::load_or_default(CONFIG_PATH);
+            let mut cfg = config::load_or_default(CONFIG_PATH);
+            cfg.services = config::merge_services(cfg.services, units::load_all());
             logging::set_level(cfg.loglevel);
             if let Some(h) = &cfg.hostname {
                 if let Err(e) = nix::unistd::sethostname(h) {
@@ -116,9 +142,9 @@ fn run_event_loop(sup: &mut Supervisor, shutdown_grace: Duration) {
         match waitpid(Pid::from_raw(-1), None) {
             Ok(status) => {
                 if matches!(sup.handle_exit(status), Outcome::Halt) {
-                    logging::info("critical service exited, shutting down");
+                    logging::info("critical service exited, powering off");
                     sup.shutdown_all(shutdown_grace);
-                    return;
+                    return ShutdownKind::PowerOff;
                 }
             }
             Err(nix::errno::Errno::EINTR) => continue,
@@ -131,19 +157,23 @@ fn run_event_loop(sup: &mut Supervisor, shutdown_grace: Duration) {
     }
 }
 
-/// Syncs disks and asks the kernel to power off. On real hardware/VMs
-/// running as actual PID 1 this doesn't return. Anywhere else (a dev
-/// container, running as a normal process) it fails with EPERM - that's
-/// expected there, and we just exit instead.
-fn power_off() {
-    logging::info("mitos-init halted, powering off");
+/// Syncs disks and asks the kernel to reboot/power off/halt, matching
+/// whichever `ShutdownKind` the event loop exited with. On real
+/// hardware/VMs running as actual PID 1 this doesn't return. Anywhere else
+/// (a dev container, running as a normal process) it fails with EPERM -
+/// that's expected there, and we just exit instead.
+fn finish(kind: ShutdownKind) {
+    logging::info("mitos-init halted");
     unsafe {
         libc::sync();
     }
 
-    let Err(e) = nix::sys::reboot::reboot(nix::sys::reboot::RebootMode::RB_POWER_OFF);
-    logging::error(&format!(
-        "reboot(RB_POWER_OFF) failed: {e} - exiting instead"
-    ));
+    let mode = match kind {
+        ShutdownKind::Reboot => nix::sys::reboot::RebootMode::RB_AUTOBOOT,
+        ShutdownKind::PowerOff => nix::sys::reboot::RebootMode::RB_POWER_OFF,
+        ShutdownKind::Halt => nix::sys::reboot::RebootMode::RB_HALT_SYSTEM,
+    };
+    let Err(e) = nix::sys::reboot::reboot(mode);
+    logging::error(&format!("reboot({mode:?}) failed: {e} - exiting instead"));
     std::process::exit(0);
 }
