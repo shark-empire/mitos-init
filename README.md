@@ -1,4 +1,4 @@
-# mitos-init
+# mitosOS-on-Linux
 
 `mitos-init` is the PID 1 process for MITOS: the first userspace program
 the kernel runs, responsible for preparing the environment and supervising
@@ -14,10 +14,36 @@ everything else that runs on top of it.
 | 3 - Process supervision | spawn, restart policy, reap zombies | done |
 | Root switch | initramfs -> real root (`root=`/`rootfstype=`, move-mount, chroot) | done |
 | Hotplug | uevent listener for device permission fixups | done (small ruleset) |
+| Standard commands | `reboot`/`poweroff`/`halt`/`shutdown`, utmp/wtmp boot record | done |
+| Declarative services | `/etc/mitos/services.d/*.service` unit files | done |
+| FHS (boot-time parts) | `/run/lock`, `/var/run` and `/var/lock` compat symlinks | done |
 
-SIGUSR1 triggers a config reload (log level / hostname); SIGUSR2 dumps a
-status summary of supervised services to the log. SIGCHLD needs no explicit
-handler since the main loop already reaps via a blocking `waitpid()`.
+SIGUSR1 triggers a config reload (log level / hostname, and re-scans
+`services.d`); SIGUSR2 dumps a status summary of supervised services to the
+log. SIGCHLD needs no explicit handler since the main loop already reaps
+via a blocking `waitpid()`.
+
+The three shutdown-family signals now map to three distinct outcomes,
+matching the convention the kernel itself uses for Ctrl-Alt-Del: **SIGINT
+= reboot**, **SIGTERM = poweroff**, **SIGQUIT = halt** (stop without
+cutting power). The `reboot`/`poweroff`/`halt`/`shutdown` binaries under
+`src/bin/` are thin wrappers that just send the matching signal to PID 1 -
+same as traditional sysvinit tooling. They need root or `CAP_KILL`, same
+as real `reboot`/`shutdown` normally being setuid or root-only.
+
+At boot, mitos-init writes a `BOOT_TIME` record via glibc's `utmpx` API
+(`pututxline`/`updwtmpx`) so `who -b` and `last reboot` work as expected.
+Per-login session records (`USER_PROCESS`/`DEAD_PROCESS`) are a getty/login
+program's job, not init's.
+
+Services can now come from three places, merged together: `init.conf`'s
+inline `service` lines, and `/etc/mitos/services.d/*.service` unit files -
+plain `[Service]` / `ExecStart=`/`Restart=` systemd-style syntax (not real
+systemd, just the same easy-to-parse format), organized one-file-per-service
+the way launchd's LaunchDaemons directory is (not real XML plists - see
+`units.rs` for why). `X-Critical=true` is a systemd-spec-legal vendor
+extension key for marking a unit critical the way `init.conf`'s inline
+`critical=true` does.
 
 The hotplug listener runs on its own thread, so signal delivery is
 explicitly pinned to the main thread (`signals::block_handled` /
@@ -40,13 +66,16 @@ initramfs stage), this whole step is skipped automatically.
 ## Layout
 
 - `src/main.rs` - boot sequence and the PID 1 event loop
-- `src/mount.rs` - Phase 1 virtual filesystem mounts (early + late)
+- `src/mount.rs` - Phase 1 virtual filesystem mounts (early + late), `/run` FHS setup
 - `src/switch_root.rs` - initramfs -> real root switch
 - `src/cmdline.rs` - `/proc/cmdline` parser (used by switch_root)
-- `src/signals.rs` - Phase 2 signal handlers
+- `src/signals.rs` - Phase 2 signal handlers, reboot/poweroff/halt semantics
 - `src/hotplug.rs` - uevent listener, fixes device permissions on hotplug
 - `src/supervisor.rs` - Phase 3 service spawning, restart policy, reaping
-- `src/config.rs` - parses `/etc/mitos/init.conf` (see `init.conf.example`)
+- `src/config.rs` - parses `/etc/mitos/init.conf`, merges in services.d units
+- `src/units.rs` - `/etc/mitos/services.d/*.service` unit file loader
+- `src/utmp.rs` - boot-time utmp/wtmp record (`who`/`last`)
+- `src/bin/{reboot,poweroff,halt,shutdown}.rs` - PID 1-signaling companion commands
 - `src/logging.rs` - dependency-free logger, writes to `/dev/kmsg` when available
 - `src/error.rs` - shared error type
 - `.github/workflows/ci.yml` - fmt/check/clippy on push and PR
