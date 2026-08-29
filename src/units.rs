@@ -69,6 +69,7 @@ fn parse_unit(path: &Path, text: &str) -> Result<ServiceDef, String> {
     let mut exec_start: Option<String> = None;
     let mut restart = RestartPolicy::Never; // systemd's own default is "no"
     let mut critical = false;
+    let mut memory_limit = None;
 
     for raw_line in text.lines() {
         let line = raw_line.trim();
@@ -107,6 +108,7 @@ fn parse_unit(path: &Path, text: &str) -> Result<ServiceDef, String> {
                 };
             }
             "X-Critical" => critical = value.eq_ignore_ascii_case("true"),
+            "MemoryMax" => memory_limit = crate::cgroups::parse_size(value),
             _ => {} // unrecognized [Service] key: ignored, not rejected
         }
     }
@@ -118,5 +120,12 @@ fn parse_unit(path: &Path, text: &str) -> Result<ServiceDef, String> {
     let bin = parts.next().ok_or("empty ExecStart=")?.to_string();
     let args = parts.map(String::from).collect();
 
-    Ok(ServiceDef { name, path: bin, args, critical, restart })
+    Ok(ServiceDef {
+        name,
+        path: bin,
+        args,
+        critical,
+        restart,
+        memory_limit,
+    })
 }

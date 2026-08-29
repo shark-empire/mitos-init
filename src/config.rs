@@ -22,6 +22,9 @@ pub struct ServiceDef {
     pub args: Vec<String>,
     pub critical: bool,
     pub restart: RestartPolicy,
+    /// Bytes, enforced via the service's cgroup (see `cgroups.rs`). `None`
+    /// means no limit.
+    pub memory_limit: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -44,6 +47,7 @@ impl Default for Config {
                 args: vec![],
                 critical: true,
                 restart: RestartPolicy::Never,
+                memory_limit: None,
             }],
         }
     }
@@ -131,6 +135,7 @@ fn parse_service(rest: &str) -> std::result::Result<ServiceDef, String> {
     let mut args = Vec::new();
     let mut critical = false;
     let mut restart = RestartPolicy::OnFailure;
+    let mut memory_limit = None;
 
     for field in parts {
         let (key, value) = field
@@ -154,6 +159,7 @@ fn parse_service(rest: &str) -> std::result::Result<ServiceDef, String> {
                     _ => RestartPolicy::OnFailure,
                 };
             }
+            "mem_max" => memory_limit = crate::cgroups::parse_size(value),
             _ => {}
         }
     }
@@ -165,5 +171,6 @@ fn parse_service(rest: &str) -> std::result::Result<ServiceDef, String> {
         args,
         critical,
         restart,
+        memory_limit,
     })
 }

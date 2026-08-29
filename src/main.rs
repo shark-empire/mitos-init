@@ -5,19 +5,22 @@
 //! (Phase 3), then sit in an event loop reaping children and reacting to
 //! signals until it's time to shut down.
 
+mod cgroups;
 mod cmdline;
 mod config;
 mod error;
 mod hotplug;
 mod logging;
 mod mount;
+mod notify;
+mod rollback;
 mod signals;
 mod supervisor;
 mod switch_root;
 mod units;
 mod utmp;
 
-use nix::sys::wait::waitpid;
+use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
 use nix::unistd::Pid;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -65,6 +68,10 @@ fn main() {
 
     utmp::log_boot();
 
+    if !cgroups::init() {
+        logging::warn("cgroup v2 unavailable - falling back to plain pid-based supervision only");
+    }
+
     if let Err(e) = signals::install_handlers() {
         logging::error(&format!("failed to install signal handlers: {e}"));
     }
@@ -86,7 +93,8 @@ fn main() {
         logging::error(&format!("failed to unblock signals: {e}"));
     }
 
-    let kind = run_event_loop(&mut sup, Duration::from_secs(cfg.shutdown_timeout_secs));
+    let grace = Duration::from_secs(cfg.shutdown_timeout_secs);
+    let kind = run_event_loop(&mut sup, &mut cfg, grace);
 
     finish(kind);
 }
@@ -105,7 +113,16 @@ enum ShutdownKind {
 /// either a critical service dies or a shutdown signal arrives. SIGUSR1/
 /// SIGUSR2 are handled here too since they need to log and touch the
 /// supervisor, neither of which is safe from inside a signal handler.
-fn run_event_loop(sup: &mut Supervisor, shutdown_grace: Duration) -> ShutdownKind {
+///
+/// SIGUSR1 now applies the reload transactionally (`rollback.rs`): while a
+/// reload's outcome is still being judged, this loop switches from a
+/// blocking `waitpid` to polling (`WNOHANG` + a short sleep) so the watch
+/// window's *expiry* gets noticed even if nothing else happens to wake the
+/// loop first. The rest of the time - no active watch - it's back to a
+/// fully blocking, zero-poll wait.
+fn run_event_loop(sup: &mut Supervisor, cfg: &mut config::Config, shutdown_grace: Duration) -> ShutdownKind {
+    let mut watch: Option<rollback::Watch> = None;
+
     loop {
         if signals::REBOOT_REQUESTED.swap(false, Ordering::SeqCst) {
             logging::info("SIGINT received (reboot) - stopping services");
@@ -125,26 +142,56 @@ fn run_event_loop(sup: &mut Supervisor, shutdown_grace: Duration) -> ShutdownKin
 
         if signals::RELOAD_REQUESTED.swap(false, Ordering::SeqCst) {
             logging::info("SIGUSR1: reloading config");
-            let mut cfg = config::load_or_default(CONFIG_PATH);
-            cfg.services = config::merge_services(cfg.services, units::load_all());
-            logging::set_level(cfg.loglevel);
-            if let Some(h) = &cfg.hostname {
+            let mut new_cfg = config::load_or_default(CONFIG_PATH);
+            new_cfg.services = config::merge_services(new_cfg.services, units::load_all());
+            logging::set_level(new_cfg.loglevel);
+            if let Some(h) = &new_cfg.hostname {
                 if let Err(e) = nix::unistd::sethostname(h) {
                     logging::warn(&format!("failed to apply reloaded hostname: {e}"));
                 }
             }
+            let previous = cfg.clone();
+            watch = Some(rollback::begin(sup, &new_cfg, previous));
+            *cfg = new_cfg;
         }
 
         if signals::STATUS_DUMP_REQUESTED.swap(false, Ordering::SeqCst) {
             logging::info(&sup.status_summary());
         }
 
-        match waitpid(Pid::from_raw(-1), None) {
+        let wait_result = if watch.is_some() {
+            waitpid(Pid::from_raw(-1), Some(WaitPidFlag::WNOHANG))
+        } else {
+            waitpid(Pid::from_raw(-1), None)
+        };
+
+        match wait_result {
             Ok(status) => {
-                if matches!(sup.handle_exit(status), Outcome::Halt) {
-                    logging::info("critical service exited, powering off");
-                    sup.shutdown_all(shutdown_grace);
-                    return ShutdownKind::PowerOff;
+                let mut failed_name: Option<String> = None;
+
+                if matches!(status, WaitStatus::StillAlive) {
+                    if watch.is_some() {
+                        std::thread::sleep(Duration::from_millis(100));
+                    }
+                } else {
+                    match sup.handle_exit(status) {
+                        Outcome::Halt(name) => {
+                            let touched = watch.as_ref().is_some_and(|w| w.touched(&name));
+                            if touched {
+                                failed_name = Some(name);
+                            } else {
+                                logging::info("critical service exited, powering off");
+                                sup.shutdown_all(shutdown_grace);
+                                return ShutdownKind::PowerOff;
+                            }
+                        }
+                        Outcome::GaveUp(name) => failed_name = Some(name),
+                        Outcome::Continue => {}
+                    }
+                }
+
+                if let Some(w) = watch.take() {
+                    watch = rollback::check(sup, cfg, w, failed_name.as_deref());
                 }
             }
             Err(nix::errno::Errno::EINTR) => continue,

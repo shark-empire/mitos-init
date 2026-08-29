@@ -25,7 +25,7 @@ struct VfsMount {
 /// Returns true if `target` already appears as a mount point in
 /// /proc/mounts. Re-mounting something the kernel or an initramfs already
 /// mounted just produces noisy EBUSY warnings, so we skip it instead.
-fn already_mounted(target: &str) -> bool {
+pub(crate) fn already_mounted(target: &str) -> bool {
     let Ok(mounts) = fs::read_to_string("/proc/mounts") else {
         return false;
     };
