@@ -17,6 +17,9 @@ everything else that runs on top of it.
 | Standard commands | `reboot`/`poweroff`/`halt`/`shutdown`, utmp/wtmp boot record | done |
 | Declarative services | `/etc/mitos/services.d/*.service` unit files | done |
 | FHS (boot-time parts) | `/run/lock`, `/var/run` and `/var/lock` compat symlinks | done |
+| Resource containment | per-service cgroup v2, `cgroup.kill` teardown, `mem_max=` limits | done |
+| Readiness protocol | sd_notify-compatible `READY=1`, surfaced in status dump | done |
+| Transactional reload | SIGUSR1 auto-reverts if a touched service fails within the watch window | done |
 
 SIGUSR1 triggers a config reload (log level / hostname, and re-scans
 `services.d`); SIGUSR2 dumps a status summary of supervised services to the
@@ -48,7 +51,49 @@ extension key for marking a unit critical the way `init.conf`'s inline
 The hotplug listener runs on its own thread, so signal delivery is
 explicitly pinned to the main thread (`signals::block_handled` /
 `unblock_handled`) before it's spawned - otherwise a signal could land on
-the worker thread and never interrupt the main thread's `waitpid()`.
+the worker thread and never interrupt the main thread's `waitpid()`. The
+same applies to the per-service readiness-listener threads `notify.rs`
+spawns, which are started after the same block.
+
+**Resource containment (`cgroups.rs`).** Plain pid-based supervision has a
+real gap: it only ever tracks the *one* pid a service was spawned as. If
+that process forks its own children, those children are invisible to the
+supervisor - reparented to PID 1 as ordinary orphans, and critically,
+never torn down when the service is stopped. Every service now gets its
+own cgroup v2 group under `/sys/fs/cgroup/mitos-init/<name>/`; shutdown
+uses `cgroup.kill` to atomically kill the whole tree, not just the tracked
+pid, and `mem_max=` (`init.conf`) / `MemoryMax=` (unit files) enforce a
+memory limit through the same cgroup.
+
+**Readiness protocol (`notify.rs`).** sd_notify-wire-format-compatible:
+`NOTIFY_SOCKET` is set in each service's environment, and a `READY=1`
+datagram marks it ready (shown in the SIGUSR2 status dump). Real systemd
+uses one shared socket authenticated via `SCM_CREDENTIALS` ancillary
+messages; we give each service its own socket instead, so the socket a
+datagram arrives on already identifies the sender - same wire protocol
+(existing `sd_notify()`-calling daemons work unmodified), simpler and
+lower-risk receiver.
+
+## Transactional config reload
+
+SIGUSR1 now does two things together: `Supervisor::reload_services`
+reconciles the running service set against the freshly-loaded config
+(stop what was removed, restart what changed, leave the rest alone,
+start what's new), and `rollback.rs` watches whatever it just started or
+restarted for 10 seconds. If one of *those* services has a hard failure
+in that window - a critical exit, or its restart budget running out
+(`supervisor.rs`'s existing crash-loop backoff) - the reload is judged
+bad and automatically reverted to the config that was running
+immediately before it, hostname/log-level included.
+
+This is deliberately scoped to services the reload itself touched:
+an unrelated service crashing for its own reasons during someone else's
+watch window doesn't trigger a revert. And it's why the main loop
+temporarily polls (`waitpid` with `WNOHANG`) for the duration of a watch
+instead of its normal fully-blocking wait - that's the only way to
+notice the window's *expiry* (confirming a good reload) when nothing
+else happens to wake the loop first. Outside an active watch, boot goes
+back to zero-poll blocking, so this costs nothing the rest of the time.
 
 CI (`.github/workflows/ci.yml`) runs `cargo fmt --check`, `cargo check`,
 and `cargo clippy -D warnings` on every push/PR.
@@ -74,6 +119,9 @@ initramfs stage), this whole step is skipped automatically.
 - `src/supervisor.rs` - Phase 3 service spawning, restart policy, reaping
 - `src/config.rs` - parses `/etc/mitos/init.conf`, merges in services.d units
 - `src/units.rs` - `/etc/mitos/services.d/*.service` unit file loader
+- `src/cgroups.rs` - per-service cgroup v2: resource containment, teardown
+- `src/notify.rs` - sd_notify-compatible service readiness protocol
+- `src/rollback.rs` - transactional SIGUSR1 reload with auto-revert on failure
 - `src/utmp.rs` - boot-time utmp/wtmp record (`who`/`last`)
 - `src/bin/{reboot,poweroff,halt,shutdown}.rs` - PID 1-signaling companion commands
 - `src/logging.rs` - dependency-free logger, writes to `/dev/kmsg` when available

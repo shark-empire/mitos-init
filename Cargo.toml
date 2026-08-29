@@ -1,6 +1,6 @@
 [package]
 name = "mitos-init"
-version = "0.4.0"
+version = "0.6.0"
 edition = "2021"
 authors = ["Your Name <babor3331@gmail.com>"]
 description = "The PID 1 initialization system for MITOS"
