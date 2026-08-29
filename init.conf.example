@@ -9,13 +9,15 @@ loglevel=info
 # before sending SIGKILL.
 shutdown_timeout=5
 
-# service <name> path=<binary> [args=a,b,c] [critical=true|false] [restart=always|on-failure|never]
+# service <name> path=<binary> [args=a,b,c] [critical=true|false] [restart=always|on-failure|never] [mem_max=SIZE]
 #   critical: if this service exits, mitos-init begins system shutdown.
 #             (critical services are never restarted - the exit is treated
 #             as "the session is over", the same way a login shell exiting
 #             ends the session.)
 #   restart:  what to do when a non-critical service exits.
 #             defaults to on-failure if omitted.
+#   mem_max:  memory limit enforced via the service's cgroup (e.g. 256M,
+#             1G, or a bare byte count). Omit for no limit.
 service shell path=/bin/mitos-shell critical=true restart=never
 
 # Example of a second, non-critical, auto-restarting service:
