@@ -1,0 +1,8 @@
+[Unit]
+Description=MITOS Wayland compositor and shell
+
+[Service]
+ExecStart=/usr/bin/mitos-gui
+Restart=always
+X-Critical=true
+# MemoryMax=512M
