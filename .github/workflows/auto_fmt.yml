@@ -1,0 +1,38 @@
+name: Auto Format
+
+# Runs cargo fmt for real (not just --check) and commits the result back
+# to the branch, so formatting never has to be a manual step before a
+# push goes out. This is separate from ci.yml's `fmt` job, which only
+# *verifies* formatting and fails the build if it's off - this one fixes
+# it instead.
+
+on:
+  push:
+    branches: [main]
+    paths: ["**.rs"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  format:
+    name: cargo fmt
+    runs-on: ubuntu-latest
+    # Skip on commits this workflow itself made, so it doesn't trigger
+    # itself in a loop.
+    if: "!contains(github.event.head_commit.message, '[autoformat]')"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - run: cargo fmt --all
+
+      - name: Commit formatting changes
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "style: auto-format with cargo fmt [autoformat]"
+          file_pattern: "*.rs"
