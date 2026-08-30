@@ -1,4 +1,4 @@
-name: mitos-init-test
+name: mitos-init
 
 on:
   push:
