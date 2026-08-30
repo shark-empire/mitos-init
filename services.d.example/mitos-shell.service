@@ -8,3 +8,4 @@ Description=MITOS interactive shell
 ExecStart=/bin/mitos-shell
 Restart=no
 X-Critical=true
+# MemoryMax=256M
