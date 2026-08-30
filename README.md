@@ -126,19 +126,26 @@ initramfs stage), this whole step is skipped automatically.
 - `src/bin/{reboot,poweroff,halt,shutdown}.rs` - PID 1-signaling companion commands
 - `src/logging.rs` - dependency-free logger, writes to `/dev/kmsg` when available
 - `src/error.rs` - shared error type
-- `.github/workflows/ci.yml` - fmt/check/clippy on push and PR
+- `.github/workflows/ci.yml` - fmt/check/clippy/test on push and PR
 - `rustfmt.toml` - pins the 2021-edition formatting rules
+- `LICENSE-MIT` / `LICENSE-APACHE` - dual-licensed, matching the Rust ecosystem norm
 
 ## Build
 
 ```
 cargo build --release
+cargo test
 ```
 
 The release profile (see `Cargo.toml`) is tuned for a small, fast-loading
 binary - size optimization, LTO, one codegen unit, stripped symbols, no
 unwind tables - since this is the very first thing the kernel loads off
-disk and none of its work is compute-bound.
+disk and none of its work is compute-bound. Unit tests cover every pure
+parsing function (`cmdline`, `config`, `units`, `cgroups::parse_size`,
+`hotplug::parse_event`, `supervisor::defs_equal`) - the logic that's
+practical to test without root or a real kernel. The parts that need
+either (mounts, cgroups, the actual boot sequence) don't have automated
+tests yet; that's what the VM testing below is for.
 
 ## Config
 
@@ -146,3 +153,70 @@ Copy `init.conf.example` to `/etc/mitos/init.conf` on the target rootfs and
 edit as needed. With no config file present, mitos-init falls back to
 spawning `/bin/mitos-shell` (or `/bin/sh` if that's missing) as the sole,
 critical service - the system is always bootable even with nothing on disk.
+
+## Installing as your system's init
+
+This replaces PID 1. Getting it wrong means a machine that won't boot -
+**test in a VM before real hardware**, every time, no exceptions.
+
+1. `cargo build --release`, then copy `target/release/mitos-init` onto
+   the target rootfs - e.g. as `/sbin/init`, or wherever your bootloader's
+   `init=` parameter will point.
+2. Copy `target/release/{reboot,poweroff,halt,shutdown}` onto the rootfs
+   too (e.g. `/sbin/`), somewhere on `PATH` for a root shell.
+3. Put a config in place - either copy `init.conf.example` to
+   `/etc/mitos/init.conf` and edit it, or drop per-service files into
+   `/etc/mitos/services.d/` (see `services.d.example/`). Both merge
+   together; neither is required (see "Config" above).
+4. Point the kernel at it via the `init=` kernel command line parameter
+   (GRUB, extlinux, whatever your bootloader is) - e.g. `init=/sbin/init`.
+   If you're booting through an initramfs and want `switch_root.rs`'s
+   handoff to the real root, make sure `root=` (and optionally
+   `rootfstype=`) is set too - that's a standard kernel parameter, nothing
+   mitos-init-specific.
+5. If you're using an initramfs, rebuild it so the new binary is actually
+   inside the image you're booting.
+
+A fast, low-risk way to iterate before touching real hardware:
+
+```
+qemu-system-x86_64 -kernel /path/to/vmlinuz -append "root=/dev/vda1 init=/sbin/init console=ttyS0" -drive file=disk.img,format=raw -nographic
+```
+
+Keep a known-working init binary available as a fallback boot entry
+(a second GRUB entry, an initramfs you know boots) until you've confirmed
+the new one works - the usual advice for anything that replaces PID 1.
+
+## Security notes
+
+Two places specifically got hardened for running alongside other,
+possibly-unprivileged local processes (as opposed to being the only thing
+running on a bespoke kernel):
+
+- **`hotplug.rs`** verifies every netlink message it acts on actually came
+  from the kernel (`SCM_CREDENTIALS`, sender pid == 0) before touching
+  device permissions - binding to the kobject-uevent multicast group alone
+  doesn't guarantee that, and this is the same check udev/systemd-udevd
+  do for the same reason. `DEVNAME` values are also rejected if they'd
+  walk outside `/dev` (`..`, a leading `/`), as defense in depth.
+- **`notify.rs`**'s per-service sockets are restricted to `0600`
+  (root-only), since every service currently runs as the same uid as
+  mitos-init itself (root - there's no privilege-dropping yet). That's
+  what actually stops a different local, unprivileged process from
+  writing a spoofed `READY=1` for a service it doesn't own.
+
+Two things this project does **not** currently do, worth knowing before
+relying on it in a genuinely multi-tenant or hostile-local-user
+environment: it doesn't drop privileges when spawning services (everything
+runs as root), and config/unit files are trusted as-is with no permission
+or signature checking - same trust model as `/etc` being root-owned on any
+mainstream distro, but worth being explicit about.
+
+## License
+
+Dual-licensed under [MIT](LICENSE-MIT) or [Apache License 2.0](LICENSE-APACHE),
+matching the Rust ecosystem's usual convention - use whichever suits your
+project. `Cargo.toml`'s `authors` field is still the placeholder from the
+original upload; update it (and the copyright line in both LICENSE files)
+with real attribution before publishing.
+
