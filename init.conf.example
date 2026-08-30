@@ -2,6 +2,9 @@
 # Copy this to /etc/mitos/init.conf on the target rootfs.
 # Lines starting with # are comments. Unknown keys/fields are logged and
 # skipped rather than treated as fatal - a typo here shouldn't stop boot.
+#
+# For wiring in mitos-gui as MITOS's actual session once it's ready, see
+# ../ASSEMBLY.md and services.d.example/mitos-gui.service.
 
 hostname=mitos
 loglevel=info

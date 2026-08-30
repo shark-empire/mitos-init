@@ -4,6 +4,11 @@
 the kernel runs, responsible for preparing the environment and supervising
 everything else that runs on top of it.
 
+MITOS itself is a custom OS/distro built on the real Linux kernel - this
+repo is one of its pieces (init), alongside `mitos-gui` (the Wayland
+compositor/shell). See [ASSEMBLY.md](ASSEMBLY.md) for how the two combine
+into an actual bootable system.
+
 ## Status
 
 | Phase | Scope | Status |
@@ -127,8 +132,11 @@ initramfs stage), this whole step is skipped automatically.
 - `src/logging.rs` - dependency-free logger, writes to `/dev/kmsg` when available
 - `src/error.rs` - shared error type
 - `.github/workflows/ci.yml` - fmt/check/clippy/test on push and PR
+- `.github/workflows/format.yml` - auto-formats and commits on push to main
 - `rustfmt.toml` - pins the 2021-edition formatting rules
 - `LICENSE-MIT` / `LICENSE-APACHE` - dual-licensed, matching the Rust ecosystem norm
+- `ASSEMBLY.md` - how mitos-init and mitos-gui combine into a bootable MITOS
+- `services.d.example/mitos-gui.service` - wiring mitos-gui in once it's ready
 
 ## Build
 
