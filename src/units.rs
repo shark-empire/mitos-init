@@ -129,3 +129,43 @@ fn parse_unit(path: &Path, text: &str) -> Result<ServiceDef, String> {
         memory_limit,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_a_minimal_unit() {
+        let text = "[Service]\nExecStart=/bin/mitos-shell\n";
+        let svc = parse_unit(Path::new("mitos-shell.service"), text).unwrap();
+        assert_eq!(svc.name, "mitos-shell");
+        assert_eq!(svc.path, "/bin/mitos-shell");
+        assert!(svc.args.is_empty());
+        assert_eq!(svc.restart, RestartPolicy::Never);
+        assert!(!svc.critical);
+    }
+
+    #[test]
+    fn parses_args_restart_critical_and_memory_max() {
+        let text = "[Unit]\nDescription=test\n\n[Service]\nExecStart=/usr/bin/foo --flag bar\nRestart=always\nX-Critical=true\nMemoryMax=128M\n";
+        let svc = parse_unit(Path::new("foo.service"), text).unwrap();
+        assert_eq!(svc.path, "/usr/bin/foo");
+        assert_eq!(svc.args, vec!["--flag".to_string(), "bar".to_string()]);
+        assert_eq!(svc.restart, RestartPolicy::Always);
+        assert!(svc.critical);
+        assert_eq!(svc.memory_limit, Some(128 * 1024 * 1024));
+    }
+
+    #[test]
+    fn ignores_keys_outside_the_service_section() {
+        let text = "[Unit]\nExecStart=/should/be/ignored\n\n[Service]\nExecStart=/real/path\n";
+        let svc = parse_unit(Path::new("x.service"), text).unwrap();
+        assert_eq!(svc.path, "/real/path");
+    }
+
+    #[test]
+    fn rejects_a_unit_with_no_execstart() {
+        let text = "[Service]\nRestart=always\n";
+        assert!(parse_unit(Path::new("x.service"), text).is_err());
+    }
+}

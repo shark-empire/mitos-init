@@ -308,3 +308,34 @@ fn fallback_shell() -> ServiceDef {
         memory_limit: None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn svc(path: &str, mem: Option<u64>) -> ServiceDef {
+        ServiceDef {
+            name: "x".into(),
+            path: path.into(),
+            args: vec![],
+            critical: false,
+            restart: RestartPolicy::Never,
+            memory_limit: mem,
+        }
+    }
+
+    #[test]
+    fn identical_defs_are_equal() {
+        assert!(defs_equal(&svc("/bin/a", None), &svc("/bin/a", None)));
+    }
+
+    #[test]
+    fn a_changed_path_is_not_equal() {
+        assert!(!defs_equal(&svc("/bin/a", None), &svc("/bin/b", None)));
+    }
+
+    #[test]
+    fn a_changed_memory_limit_is_not_equal() {
+        assert!(!defs_equal(&svc("/bin/a", None), &svc("/bin/a", Some(1024))));
+    }
+}

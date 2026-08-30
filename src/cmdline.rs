@@ -47,3 +47,37 @@ fn parse_str(s: &str) -> HashMap<String, Option<String>> {
     push_token(&current, &mut map);
     map
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_bare_and_valued_tokens() {
+        let map = parse_str("root=/dev/sda1 quiet splash");
+        assert_eq!(map.get("root"), Some(&Some("/dev/sda1".to_string())));
+        assert_eq!(map.get("quiet"), Some(&None));
+        assert_eq!(map.get("splash"), Some(&None));
+    }
+
+    #[test]
+    fn keeps_only_the_first_equals_sign() {
+        let map = parse_str("root=UUID=1234-5678 rootfstype=ext4");
+        assert_eq!(map.get("root"), Some(&Some("UUID=1234-5678".to_string())));
+        assert_eq!(map.get("rootfstype"), Some(&Some("ext4".to_string())));
+    }
+
+    #[test]
+    fn strips_quotes_from_quoted_values() {
+        let map = parse_str(r#"foo="bar baz" quiet"#);
+        assert_eq!(map.get("foo"), Some(&Some("bar baz".to_string())));
+    }
+
+    #[test]
+    fn ignores_extra_whitespace() {
+        let map = parse_str("  root=/dev/sda1   quiet  ");
+        assert_eq!(map.get("root"), Some(&Some("/dev/sda1".to_string())));
+        assert_eq!(map.get("quiet"), Some(&None));
+        assert_eq!(map.len(), 2);
+    }
+}

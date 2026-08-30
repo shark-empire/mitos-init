@@ -19,6 +19,7 @@
 use crate::logging;
 use std::collections::HashSet;
 use std::io;
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixDatagram;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -58,6 +59,7 @@ pub fn listen_for(name: &str, state: Arc<ReadyState>) -> Option<PathBuf> {
         logging::debug(&format!("couldn't create {NOTIFY_DIR}: {e}"));
         return None;
     }
+    let _ = std::fs::set_permissions(NOTIFY_DIR, std::fs::Permissions::from_mode(0o700));
 
     let path = PathBuf::from(NOTIFY_DIR).join(format!("{name}.sock"));
     let _ = std::fs::remove_file(&path); // stale socket from a previous instance of this service
@@ -69,6 +71,15 @@ pub fn listen_for(name: &str, state: Arc<ReadyState>) -> Option<PathBuf> {
             return None;
         }
     };
+    // Since every service is given its own socket rather than one shared,
+    // credential-authenticated socket (see the module doc comment),
+    // filesystem permissions are what actually stop a *different* local
+    // process from writing a spoofed READY=1 here. Every currently
+    // spawned service runs as the same uid as mitos-init (root - there's
+    // no privilege-dropping yet), so root-only is correct for today's
+    // threat model; if that changes, this would need to chown to the
+    // specific service's uid instead of just restricting the mode bits.
+    let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
 
     let thread_name = name.to_string();
     let ret_path = path.clone();

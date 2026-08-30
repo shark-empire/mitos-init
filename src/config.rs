@@ -174,3 +174,72 @@ fn parse_service(rest: &str) -> std::result::Result<ServiceDef, String> {
         memory_limit,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_global_settings() {
+        let cfg = parse("hostname=myhost\nloglevel=debug\nshutdown_timeout=15\n");
+        assert_eq!(cfg.hostname.as_deref(), Some("myhost"));
+        assert_eq!(cfg.loglevel, Level::Debug);
+        assert_eq!(cfg.shutdown_timeout_secs, 15);
+    }
+
+    #[test]
+    fn ignores_comments_and_blank_lines() {
+        let cfg = parse("# a comment\n\nhostname=x\n");
+        assert_eq!(cfg.hostname.as_deref(), Some("x"));
+    }
+
+    #[test]
+    fn falls_back_to_default_service_when_none_declared() {
+        let cfg = parse("hostname=x\n");
+        assert_eq!(cfg.services.len(), 1);
+        assert_eq!(cfg.services[0].name, "shell");
+    }
+
+    #[test]
+    fn parses_a_service_line() {
+        let cfg = parse(
+            "service web path=/usr/bin/web args=--port,8080 critical=false restart=always mem_max=256M\n",
+        );
+        assert_eq!(cfg.services.len(), 1);
+        let svc = &cfg.services[0];
+        assert_eq!(svc.name, "web");
+        assert_eq!(svc.path, "/usr/bin/web");
+        assert_eq!(svc.args, vec!["--port".to_string(), "8080".to_string()]);
+        assert!(!svc.critical);
+        assert_eq!(svc.restart, RestartPolicy::Always);
+        assert_eq!(svc.memory_limit, Some(256 * 1024 * 1024));
+    }
+
+    #[test]
+    fn rejects_a_service_missing_path() {
+        assert!(parse_service("web critical=true").is_err());
+    }
+
+    #[test]
+    fn merge_keeps_first_on_name_collision() {
+        let base = vec![ServiceDef {
+            name: "shell".into(),
+            path: "/bin/a".into(),
+            args: vec![],
+            critical: true,
+            restart: RestartPolicy::Never,
+            memory_limit: None,
+        }];
+        let extra = vec![ServiceDef {
+            name: "shell".into(),
+            path: "/bin/b".into(),
+            args: vec![],
+            critical: false,
+            restart: RestartPolicy::Never,
+            memory_limit: None,
+        }];
+        let merged = merge_services(base, extra);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].path, "/bin/a");
+    }
+}

@@ -120,3 +120,33 @@ pub fn parse_size(s: &str) -> Option<u64> {
     };
     num.trim().parse::<u64>().ok().map(|n| n * mult)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_bare_bytes() {
+        assert_eq!(parse_size("1024"), Some(1024));
+    }
+
+    #[test]
+    fn parses_binary_suffixes() {
+        assert_eq!(parse_size("1K"), Some(1024));
+        assert_eq!(parse_size("1Ki"), Some(1024));
+        assert_eq!(parse_size("1M"), Some(1024 * 1024));
+        assert_eq!(parse_size("1Mi"), Some(1024 * 1024));
+        assert_eq!(parse_size("2G"), Some(2 * 1024 * 1024 * 1024));
+    }
+
+    #[test]
+    fn trims_whitespace() {
+        assert_eq!(parse_size("  256M  "), Some(256 * 1024 * 1024));
+    }
+
+    #[test]
+    fn rejects_garbage() {
+        assert_eq!(parse_size("not-a-size"), None);
+        assert_eq!(parse_size(""), None);
+    }
+}
