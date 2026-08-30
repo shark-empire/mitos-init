@@ -159,7 +159,9 @@ fn handle_event(raw: &[u8]) {
     // Defense in depth even though the sender is now verified as the
     // kernel: never let a DEVNAME value walk us outside /dev.
     if devname.contains("..") || devname.starts_with('/') {
-        logging::warn(&format!("hotplug: rejecting suspicious DEVNAME '{devname}'"));
+        logging::warn(&format!(
+            "hotplug: rejecting suspicious DEVNAME '{devname}'"
+        ));
         return;
     }
 

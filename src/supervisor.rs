@@ -175,7 +175,10 @@ impl Supervisor {
             .collect();
         for pid in removed_pids {
             if let Some(sup) = self.services.remove(&pid) {
-                logging::info(&format!("reload: stopping removed service '{}'", sup.def.name));
+                logging::info(&format!(
+                    "reload: stopping removed service '{}'",
+                    sup.def.name
+                ));
                 stop_one(pid, &sup.def.name);
             }
         }
@@ -192,7 +195,10 @@ impl Supervisor {
             match found {
                 Some((_, true)) => continue, // unchanged, leave it running
                 Some((pid, false)) => {
-                    logging::info(&format!("reload: restarting changed service '{}'", def.name));
+                    logging::info(&format!(
+                        "reload: restarting changed service '{}'",
+                        def.name
+                    ));
                     self.services.remove(&pid);
                     stop_one(pid, &def.name);
                     self.spawn_with_history(def.clone(), Vec::new());
@@ -281,7 +287,10 @@ fn stop_one(pid: i32, name: &str) {
             let _ = kill(Pid::from_raw(pid), Signal::SIGKILL);
             break;
         }
-        match nix::sys::wait::waitpid(Pid::from_raw(pid), Some(nix::sys::wait::WaitPidFlag::WNOHANG)) {
+        match nix::sys::wait::waitpid(
+            Pid::from_raw(pid),
+            Some(nix::sys::wait::WaitPidFlag::WNOHANG),
+        ) {
             Ok(WaitStatus::Exited(_, _)) | Ok(WaitStatus::Signaled(_, _, _)) => break,
             Ok(_) => std::thread::sleep(Duration::from_millis(50)),
             Err(_) => break, // already reaped elsewhere, or no such process
@@ -336,6 +345,9 @@ mod tests {
 
     #[test]
     fn a_changed_memory_limit_is_not_equal() {
-        assert!(!defs_equal(&svc("/bin/a", None), &svc("/bin/a", Some(1024))));
+        assert!(!defs_equal(
+            &svc("/bin/a", None),
+            &svc("/bin/a", Some(1024))
+        ));
     }
 }

@@ -154,7 +154,9 @@ pub fn populate_run() {
 fn ensure_compat_symlink(link: &str, target: &str) {
     match fs::symlink_metadata(link) {
         Ok(meta) if meta.file_type().is_symlink() => {} // already set up
-        Ok(_) => logging::debug(&format!("{link} exists and isn't a symlink, leaving it alone")),
+        Ok(_) => logging::debug(&format!(
+            "{link} exists and isn't a symlink, leaving it alone"
+        )),
         Err(_) => {
             if let Some(parent) = Path::new(link).parent() {
                 let _ = fs::create_dir_all(parent);

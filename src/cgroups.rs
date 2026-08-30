@@ -35,7 +35,9 @@ pub fn init() -> bool {
     }
 
     if !crate::mount::already_mounted("/sys/fs/cgroup") {
-        let flags = nix::mount::MsFlags::MS_NOSUID | nix::mount::MsFlags::MS_NOEXEC | nix::mount::MsFlags::MS_NODEV;
+        let flags = nix::mount::MsFlags::MS_NOSUID
+            | nix::mount::MsFlags::MS_NOEXEC
+            | nix::mount::MsFlags::MS_NODEV;
         if let Err(e) = nix::mount::mount(
             Some("cgroup2"),
             "/sys/fs/cgroup",
@@ -88,7 +90,9 @@ pub fn create_for(name: &str, memory_limit: Option<u64>) -> bool {
 pub fn attach(name: &str, pid: i32) {
     let path = service_dir(name).join("cgroup.procs");
     if let Err(e) = fs::write(&path, pid.to_string()) {
-        logging::debug(&format!("couldn't attach pid {pid} to cgroup '{name}': {e}"));
+        logging::debug(&format!(
+            "couldn't attach pid {pid} to cgroup '{name}': {e}"
+        ));
     }
 }
 
@@ -109,15 +113,16 @@ pub fn kill_and_remove(name: &str) {
 /// stricter decimal-by-default `M=1000*1000` convention.
 pub fn parse_size(s: &str) -> Option<u64> {
     let s = s.trim();
-    let (num, mult): (&str, u64) = if let Some(n) = s.strip_suffix("Ki").or_else(|| s.strip_suffix('K')) {
-        (n, 1024)
-    } else if let Some(n) = s.strip_suffix("Mi").or_else(|| s.strip_suffix('M')) {
-        (n, 1024 * 1024)
-    } else if let Some(n) = s.strip_suffix("Gi").or_else(|| s.strip_suffix('G')) {
-        (n, 1024 * 1024 * 1024)
-    } else {
-        (s, 1)
-    };
+    let (num, mult): (&str, u64) =
+        if let Some(n) = s.strip_suffix("Ki").or_else(|| s.strip_suffix('K')) {
+            (n, 1024)
+        } else if let Some(n) = s.strip_suffix("Mi").or_else(|| s.strip_suffix('M')) {
+            (n, 1024 * 1024)
+        } else if let Some(n) = s.strip_suffix("Gi").or_else(|| s.strip_suffix('G')) {
+            (n, 1024 * 1024 * 1024)
+        } else {
+            (s, 1)
+        };
     num.trim().parse::<u64>().ok().map(|n| n * mult)
 }
 

@@ -53,7 +53,11 @@ pub fn begin(sup: &mut Supervisor, new_cfg: &Config, previous: Config) -> Watch 
             touched.len()
         ));
     }
-    Watch { deadline: Instant::now() + WATCH_WINDOW, touched, previous }
+    Watch {
+        deadline: Instant::now() + WATCH_WINDOW,
+        touched,
+        previous,
+    }
 }
 
 /// Judges the current watch: pass `failed_name` when a service just died
@@ -62,7 +66,12 @@ pub fn begin(sup: &mut Supervisor, new_cfg: &Config, previous: Config) -> Watch 
 /// yet?" check. Returns `None` once the watch is resolved (confirmed good,
 /// or rolled back) - the caller drops it in that case; `Some(watch)` to
 /// keep watching otherwise.
-pub fn check(sup: &mut Supervisor, cfg: &mut Config, watch: Watch, failed_name: Option<&str>) -> Option<Watch> {
+pub fn check(
+    sup: &mut Supervisor,
+    cfg: &mut Config,
+    watch: Watch,
+    failed_name: Option<&str>,
+) -> Option<Watch> {
     if let Some(name) = failed_name {
         if watch.touched(name) {
             logging::error(&format!(

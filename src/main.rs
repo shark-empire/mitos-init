@@ -120,7 +120,11 @@ enum ShutdownKind {
 /// window's *expiry* gets noticed even if nothing else happens to wake the
 /// loop first. The rest of the time - no active watch - it's back to a
 /// fully blocking, zero-poll wait.
-fn run_event_loop(sup: &mut Supervisor, cfg: &mut config::Config, shutdown_grace: Duration) -> ShutdownKind {
+fn run_event_loop(
+    sup: &mut Supervisor,
+    cfg: &mut config::Config,
+    shutdown_grace: Duration,
+) -> ShutdownKind {
     let mut watch: Option<rollback::Watch> = None;
 
     loop {

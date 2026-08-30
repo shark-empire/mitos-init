@@ -4,13 +4,18 @@
 //! individual logins - this only logs the BOOT_TIME record that init
 //! itself is responsible for.
 //!
-//! Uses glibc's own utmpx functions (`pututxline`/`updwtmpx`) rather than
-//! hand-writing the utmp file format - they already know the real record
-//! layout, default file paths, and locking, which is exactly the kind of
-//! detail not worth re-deriving by hand.
+//! Uses glibc's own utmpx API (`pututxline`) for the utmp database itself,
+//! since it already knows the real default file path and locking. wtmp is
+//! simpler than it looks though - it's just a flat file of back-to-back
+//! `utmpx` records - and the libc crate doesn't bind glibc's `updwtmpx()`
+//! helper for appending one, so `append_to_wtmp` does exactly what that
+//! function does internally: open for append, write the raw record bytes.
 
 use crate::logging;
-use libc::{c_char, timeval, utmpx, BOOT_TIME};
+use libc::{c_char, utmpx, BOOT_TIME};
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::os::unix::fs::OpenOptionsExt;
 
 const WTMP_PATH: &str = "/var/log/wtmp";
 
@@ -31,7 +36,9 @@ pub fn log_boot() {
     copy_into(&mut entry.ut_user, "reboot");
 
     let now = unsafe { libc::time(std::ptr::null_mut()) };
-    entry.ut_tv = timeval { tv_sec: now as _, tv_usec: 0 };
+    // utmpx's timestamp field is glibc's internal `__timeval`, not the
+    // usual public `timeval` - a distinct type despite matching fields.
+    entry.ut_tv = libc::__timeval { tv_sec: now as _, tv_usec: 0 };
 
     unsafe {
         libc::setutxent();
@@ -39,9 +46,25 @@ pub fn log_boot() {
             logging::debug("couldn't write utmp boot record");
         }
         libc::endutxent();
+    }
 
-        if let Ok(path) = std::ffi::CString::new(WTMP_PATH) {
-            libc::updwtmpx(path.as_ptr(), &entry);
+    append_to_wtmp(&entry);
+}
+
+fn append_to_wtmp(entry: &utmpx) {
+    let bytes = unsafe {
+        std::slice::from_raw_parts(
+            entry as *const utmpx as *const u8,
+            std::mem::size_of::<utmpx>(),
+        )
+    };
+
+    match OpenOptions::new().create(true).append(true).mode(0o664).open(WTMP_PATH) {
+        Ok(mut f) => {
+            if let Err(e) = f.write_all(bytes) {
+                logging::debug(&format!("couldn't append to {WTMP_PATH}: {e}"));
+            }
         }
+        Err(e) => logging::debug(&format!("couldn't open {WTMP_PATH}: {e}")),
     }
 }
