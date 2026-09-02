@@ -12,6 +12,16 @@ pub fn parse() -> HashMap<String, Option<String>> {
     parse_str(raw.trim())
 }
 
+/// True if the kernel command line asks for a rescue/single-user boot -
+/// recognizes both the traditional sysvinit `single` and an explicit
+/// `mitos.rescue`, so either convention works. Checked once at boot
+/// (`main.rs`) to skip configured services entirely and start a plain
+/// shell instead - the escape hatch for "config is broken and the system
+/// won't come up".
+pub fn rescue_requested(args: &HashMap<String, Option<String>>) -> bool {
+    args.contains_key("single") || args.contains_key("mitos.rescue")
+}
+
 fn push_token(tok: &str, map: &mut HashMap<String, Option<String>>) {
     if tok.is_empty() {
         return;
@@ -79,5 +89,12 @@ mod tests {
         assert_eq!(map.get("root"), Some(&Some("/dev/sda1".to_string())));
         assert_eq!(map.get("quiet"), Some(&None));
         assert_eq!(map.len(), 2);
+    }
+
+    #[test]
+    fn recognizes_rescue_triggers() {
+        assert!(rescue_requested(&parse_str("root=/dev/sda1 single")));
+        assert!(rescue_requested(&parse_str("root=/dev/sda1 mitos.rescue")));
+        assert!(!rescue_requested(&parse_str("root=/dev/sda1 quiet")));
     }
 }

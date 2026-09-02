@@ -125,8 +125,57 @@ pub fn mount_late_vfs() -> Vec<InitError> {
             flags: F::MS_NOSUID | F::MS_NODEV,
             data: Some("mode=1777"),
         },
+        VfsMount {
+            source: "cgroup2",
+            target: "/sys/fs/cgroup",
+            fstype: "cgroup2",
+            flags: F::MS_NOSUID | F::MS_NOEXEC | F::MS_NODEV,
+            data: None,
+        },
     ];
     run_mounts(&mounts)
+}
+
+const CGROUP_ROOT: &str = "/sys/fs/cgroup/mitos-init";
+
+/// Creates the parent cgroup mitos-services' per-service cgroups will
+/// live under, and enables the controllers they need (currently just
+/// "memory", for `mem_max=`/`MemoryMax=`) for its descendants via
+/// `cgroup.subtree_control`. This has to happen here, before
+/// mitos-services exists: a cgroup only grants a controller to its
+/// *children* once that controller is listed in the cgroup's own
+/// subtree_control, and mitos-init is the only thing running yet at the
+/// point this needs doing (it also requires being this far up the
+/// hierarchy, closer to the real root cgroup, than mitos-services -
+/// itself a child process - has any need to reach).
+///
+/// Best-effort: an older kernel without cgroup v2 shouldn't stop boot -
+/// mitos-services degrades to plain pid-based supervision if this
+/// wasn't set up, the same way it already does for any other missing
+/// optional subsystem.
+pub fn setup_service_cgroup_root() -> bool {
+    if let Err(e) = fs::create_dir_all(CGROUP_ROOT) {
+        logging::warn(&format!("couldn't create {CGROUP_ROOT}: {e}"));
+        return false;
+    }
+    let ok_root = enable_controller("/sys/fs/cgroup/cgroup.subtree_control", "memory");
+    let ok_child = enable_controller(&format!("{CGROUP_ROOT}/cgroup.subtree_control"), "memory");
+    if ok_root && ok_child {
+        logging::info(&format!("{CGROUP_ROOT} ready for mitos-services"));
+    }
+    ok_root && ok_child
+}
+
+fn enable_controller(subtree_control_path: &str, controller: &str) -> bool {
+    match fs::write(subtree_control_path, format!("+{controller}")) {
+        Ok(()) => true,
+        Err(e) => {
+            logging::warn(&format!(
+                "couldn't enable '{controller}' via {subtree_control_path}: {e}"
+            ));
+            false
+        }
+    }
 }
 
 /// Populates the parts of the FHS tree that only make sense fresh per

@@ -1,35 +1,45 @@
 //! mitos-init — the PID 1 process for MITOS.
 //!
-//! Boot sequence: mount the virtual filesystem tree (Phase 1), load config
-//! and install signal handlers (Phase 0/2), spawn the configured services
-//! (Phase 3), then sit in an event loop reaping children and reacting to
-//! signals until it's time to shut down.
+//! Deliberately minimal. Everything a real Linux boot needs before any
+//! configurable logic can run - mounting the kernel-facing filesystem
+//! tree, the initramfs -> real-root handoff, device permissions - stays
+//! here. Everything else (parsing config, spawning and supervising
+//! services, the readiness protocol, IPC) has moved to mitos-services, a
+//! separate binary this process spawns and supervises as a single child.
+//! See INTEGRATION.md for why: the short version is that
+//! `panic = "abort"` PID 1 code has no room for the kind of complexity a
+//! full service manager needs (dependency graphs, cycle detection, ...)
+//! without meaningfully raising the odds of a kernel panic. A bug in
+//! mitos-services can only crash mitos-services, which this process then
+//! restarts.
 
-mod cgroups;
 mod cmdline;
-mod config;
 mod error;
 mod hotplug;
 mod logging;
 mod mount;
-mod notify;
-mod rollback;
 mod signals;
-mod supervisor;
 mod switch_root;
-mod units;
 mod utmp;
 
-use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
+use nix::sys::signal::{kill, Signal};
+use nix::sys::wait::{waitpid, WaitStatus};
 use nix::unistd::Pid;
-use std::sync::atomic::Ordering;
-use std::time::Duration;
-use supervisor::{Outcome, Supervisor};
+use std::io::Read;
+use std::os::unix::process::CommandExt;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
-const CONFIG_PATH: &str = "/etc/mitos/init.conf";
+const SERVICES_BIN: &str = "/sbin/mitos-services";
+const SHUTDOWN_ACK_FIFO: &str = "/run/mitos-init/shutdown-ack";
+const MAX_RESTARTS_IN_WINDOW: usize = 5;
+const BACKOFF_WINDOW: Duration = Duration::from_secs(10);
+const SHUTDOWN_ACK_TIMEOUT: Duration = Duration::from_secs(20);
 
 fn main() {
     logging::init();
+    install_panic_hook();
     logging::info("mitos-init starting");
 
     if nix::unistd::getpid().as_raw() != 1 {
@@ -56,28 +66,26 @@ fn main() {
     }
     mount::populate_run();
 
-    let mut cfg = config::load_or_default(CONFIG_PATH);
-    cfg.services = config::merge_services(cfg.services, units::load_all());
-    logging::set_level(cfg.loglevel);
-
-    if let Some(hostname) = &cfg.hostname {
-        if let Err(e) = nix::unistd::sethostname(hostname) {
-            logging::warn(&format!("failed to set hostname to '{hostname}': {e}"));
-        }
+    if !mount::setup_service_cgroup_root() {
+        logging::warn(
+            "cgroup delegation unavailable - mitos-services will fall back to plain pid-based supervision",
+        );
     }
 
     utmp::log_boot();
 
-    if !cgroups::init() {
-        logging::warn("cgroup v2 unavailable - falling back to plain pid-based supervision only");
+    if cmdline::rescue_requested(&cmdline::parse()) {
+        logging::warn(
+            "rescue mode requested on the kernel command line (single/mitos.rescue) - \
+             starting a rescue shell directly, without mitos-services",
+        );
+        run_rescue_only();
+        return; // unreachable in practice - run_rescue_only either execs or exits
     }
 
     if let Err(e) = signals::install_handlers() {
         logging::error(&format!("failed to install signal handlers: {e}"));
     }
-    // Block the signals we handle on this (main) thread before spawning any
-    // worker threads, so they inherit the block and can't steal delivery
-    // from the thread that's actually waiting on it - see signals::block_handled.
     if let Err(e) = signals::block_handled() {
         logging::warn(&format!(
             "failed to block signals ahead of worker threads: {e}"
@@ -85,118 +93,105 @@ fn main() {
     }
 
     hotplug::spawn_listener();
-
-    let mut sup = Supervisor::new();
-    sup.spawn_all(&cfg.services);
+    let have_fifo = create_ack_fifo();
 
     if let Err(e) = signals::unblock_handled() {
         logging::error(&format!("failed to unblock signals: {e}"));
     }
 
-    let grace = Duration::from_secs(cfg.shutdown_timeout_secs);
-    let kind = run_event_loop(&mut sup, &mut cfg, grace);
-
+    let kind = run_event_loop(have_fifo);
     finish(kind);
 }
 
-/// Which of the three end states the event loop is exiting toward -
-/// distinct because `reboot`, `poweroff`, and `halt` all end boot
-/// differently (see `signals.rs` for how each one gets triggered).
+/// Bypasses mitos-services entirely: execs a plain shell directly in
+/// place of this process, rather than spawning and supervising it.
+/// There's nothing left for mitos-init to do once this runs - if the
+/// rescue shell exits, that's the end of the session, the same as it
+/// would be for any process that's replaced PID 1.
+fn run_rescue_only() {
+    let err = std::process::Command::new("/bin/sh").exec();
+    // exec() only returns on failure.
+    logging::error(&format!("couldn't exec /bin/sh for rescue mode: {err}"));
+    std::process::exit(1);
+}
+
+fn create_ack_fifo() -> bool {
+    match nix::unistd::mkfifo(SHUTDOWN_ACK_FIFO, nix::sys::stat::Mode::from_bits_truncate(0o600)) {
+        Ok(()) => true,
+        Err(nix::errno::Errno::EEXIST) => true,
+        Err(e) => {
+            logging::warn(&format!(
+                "couldn't create {SHUTDOWN_ACK_FIFO}: {e} - shutdown will proceed on a fixed \
+                 timeout instead of waiting for mitos-services to confirm"
+            ));
+            false
+        }
+    }
+}
+
+fn spawn_services() -> Option<i32> {
+    match std::process::Command::new(SERVICES_BIN).spawn() {
+        Ok(child) => {
+            let pid = child.id() as i32;
+            logging::info(&format!("started mitos-services as pid {pid}"));
+            Some(pid)
+        }
+        Err(e) => {
+            logging::error(&format!("failed to start {SERVICES_BIN}: {e}"));
+            None
+        }
+    }
+}
+
 enum ShutdownKind {
     Reboot,
     PowerOff,
     Halt,
 }
 
-/// The core PID 1 loop: block in `waitpid` reaping whatever exits (tracked
-/// services and reparented orphans alike), and bail out to shut down when
-/// either a critical service dies or a shutdown signal arrives. SIGUSR1/
-/// SIGUSR2 are handled here too since they need to log and touch the
-/// supervisor, neither of which is safe from inside a signal handler.
-///
-/// SIGUSR1 now applies the reload transactionally (`rollback.rs`): while a
-/// reload's outcome is still being judged, this loop switches from a
-/// blocking `waitpid` to polling (`WNOHANG` + a short sleep) so the watch
-/// window's *expiry* gets noticed even if nothing else happens to wake the
-/// loop first. The rest of the time - no active watch - it's back to a
-/// fully blocking, zero-poll wait.
-fn run_event_loop(
-    sup: &mut Supervisor,
-    cfg: &mut config::Config,
-    shutdown_grace: Duration,
-) -> ShutdownKind {
-    let mut watch: Option<rollback::Watch> = None;
+/// The core PID 1 loop: supervises exactly one child, mitos-services,
+/// restarting it (with the same crash-loop backoff shape services
+/// themselves used to get from `supervisor.rs`, before that moved) if it
+/// exits unexpectedly, relaying shutdown/reload/status signals to it,
+/// and waiting - bounded - for its shutdown-ack before this process
+/// performs the actual `reboot(2)` syscall.
+fn run_event_loop(have_fifo: bool) -> ShutdownKind {
+    let mut services_pid = spawn_services();
+    let mut restart_times: Vec<Instant> = Vec::new();
+    if services_pid.is_none() {
+        logging::error("mitos-services couldn't be started at all - falling back to a rescue shell");
+        run_rescue_only();
+    }
 
     loop {
-        if signals::REBOOT_REQUESTED.swap(false, Ordering::SeqCst) {
-            logging::info("SIGINT received (reboot) - stopping services");
-            sup.shutdown_all(shutdown_grace);
-            return ShutdownKind::Reboot;
-        }
-        if signals::POWEROFF_REQUESTED.swap(false, Ordering::SeqCst) {
-            logging::info("SIGTERM received (poweroff) - stopping services");
-            sup.shutdown_all(shutdown_grace);
-            return ShutdownKind::PowerOff;
-        }
-        if signals::HALT_REQUESTED.swap(false, Ordering::SeqCst) {
-            logging::info("SIGQUIT received (halt) - stopping services");
-            sup.shutdown_all(shutdown_grace);
-            return ShutdownKind::Halt;
+        if let Some(kind) = check_shutdown(&mut services_pid, have_fifo) {
+            return kind;
         }
 
         if signals::RELOAD_REQUESTED.swap(false, Ordering::SeqCst) {
-            logging::info("SIGUSR1: reloading config");
-            let mut new_cfg = config::load_or_default(CONFIG_PATH);
-            new_cfg.services = config::merge_services(new_cfg.services, units::load_all());
-            logging::set_level(new_cfg.loglevel);
-            if let Some(h) = &new_cfg.hostname {
-                if let Err(e) = nix::unistd::sethostname(h) {
-                    logging::warn(&format!("failed to apply reloaded hostname: {e}"));
-                }
-            }
-            let previous = cfg.clone();
-            watch = Some(rollback::begin(sup, &new_cfg, previous));
-            *cfg = new_cfg;
+            relay(services_pid, Signal::SIGUSR1, "reload");
         }
-
         if signals::STATUS_DUMP_REQUESTED.swap(false, Ordering::SeqCst) {
-            logging::info(&sup.status_summary());
+            relay(services_pid, Signal::SIGUSR2, "status dump");
         }
 
-        let wait_result = if watch.is_some() {
-            waitpid(Pid::from_raw(-1), Some(WaitPidFlag::WNOHANG))
-        } else {
-            waitpid(Pid::from_raw(-1), None)
-        };
-
-        match wait_result {
+        match waitpid(Pid::from_raw(-1), None) {
             Ok(status) => {
-                let mut failed_name: Option<String> = None;
-
-                if matches!(status, WaitStatus::StillAlive) {
-                    if watch.is_some() {
-                        std::thread::sleep(Duration::from_millis(100));
+                let exited_pid = match status {
+                    WaitStatus::Exited(pid, _) | WaitStatus::Signaled(pid, _, _) => {
+                        Some(pid.as_raw())
                     }
-                } else {
-                    match sup.handle_exit(status) {
-                        Outcome::Halt(name) => {
-                            let touched = watch.as_ref().is_some_and(|w| w.touched(&name));
-                            if touched {
-                                failed_name = Some(name);
-                            } else {
-                                logging::info("critical service exited, powering off");
-                                sup.shutdown_all(shutdown_grace);
-                                return ShutdownKind::PowerOff;
-                            }
-                        }
-                        Outcome::GaveUp(name) => failed_name = Some(name),
-                        Outcome::Continue => {}
-                    }
+                    _ => None,
+                };
+                if exited_pid.is_some() && exited_pid == services_pid {
+                    logging::error("mitos-services exited unexpectedly");
+                    services_pid = restart_with_backoff(&mut restart_times);
                 }
-
-                if let Some(w) = watch.take() {
-                    watch = rollback::check(sup, cfg, w, failed_name.as_deref());
-                }
+                // Anything else reaped here is an orphan mitos-init itself
+                // ended up with - not one of a service's descendants,
+                // since mitos-services' own PR_SET_CHILD_SUBREAPER catches
+                // those first. Reaping it via this same waitpid(-1) call
+                // is already all that's needed.
             }
             Err(nix::errno::Errno::EINTR) => continue,
             Err(nix::errno::Errno::ECHILD) => {
@@ -208,11 +203,109 @@ fn run_event_loop(
     }
 }
 
+fn relay(services_pid: Option<i32>, signal: Signal, what: &str) {
+    match services_pid {
+        Some(pid) => {
+            let _ = kill(Pid::from_raw(pid), signal);
+        }
+        None => logging::warn(&format!(
+            "mitos-services isn't running, nothing to relay this {what} to"
+        )),
+    }
+}
+
+fn restart_with_backoff(restart_times: &mut Vec<Instant>) -> Option<i32> {
+    let now = Instant::now();
+    restart_times.retain(|t| now.duration_since(*t) < BACKOFF_WINDOW);
+    restart_times.push(now);
+
+    if restart_times.len() > MAX_RESTARTS_IN_WINDOW {
+        logging::error(&format!(
+            "mitos-services restarted {} times within {BACKOFF_WINDOW:?}, giving up - \
+             falling back to a rescue shell",
+            restart_times.len()
+        ));
+        run_rescue_only();
+        return None; // unreachable - run_rescue_only either execs or exits
+    }
+
+    spawn_services()
+}
+
+fn check_shutdown(services_pid: &mut Option<i32>, have_fifo: bool) -> Option<ShutdownKind> {
+    // Evaluated unconditionally so every flag actually gets cleared,
+    // regardless of which one(s) are set - see the same note in
+    // mitos-services' own event loop.
+    let reboot = signals::REBOOT_REQUESTED.swap(false, Ordering::SeqCst);
+    let poweroff = signals::POWEROFF_REQUESTED.swap(false, Ordering::SeqCst);
+    let halt = signals::HALT_REQUESTED.swap(false, Ordering::SeqCst);
+
+    let (kind, signal) = if reboot {
+        (ShutdownKind::Reboot, Signal::SIGINT)
+    } else if poweroff {
+        (ShutdownKind::PowerOff, Signal::SIGTERM)
+    } else if halt {
+        (ShutdownKind::Halt, Signal::SIGQUIT)
+    } else {
+        return None;
+    };
+
+    logging::info("shutdown requested - relaying to mitos-services and waiting for it to stop services");
+    relay(*services_pid, signal, "shutdown");
+
+    if have_fifo {
+        wait_for_ack(SHUTDOWN_ACK_TIMEOUT);
+    } else {
+        std::thread::sleep(Duration::from_secs(3));
+    }
+    *services_pid = None;
+    Some(kind)
+}
+
+/// Blocks (bounded) until mitos-services writes to the shutdown-ack FIFO,
+/// or `timeout` passes - whichever comes first. Opening a FIFO for
+/// reading blocks by nature, so the actual open+read happens on a
+/// throwaway thread and this just polls a flag - the same pattern
+/// `rollback.rs` used for its bounded reload watch before that moved to
+/// mitos-services.
+fn wait_for_ack(timeout: Duration) {
+    let acked = Arc::new(AtomicBool::new(false));
+    let flag = acked.clone();
+    std::thread::spawn(move || {
+        if let Ok(mut f) = std::fs::File::open(SHUTDOWN_ACK_FIFO) {
+            let mut buf = [0u8; 1];
+            let _ = f.read(&mut buf);
+        }
+        flag.store(true, Ordering::SeqCst);
+    });
+
+    let deadline = Instant::now() + timeout;
+    while !acked.load(Ordering::SeqCst) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    if !acked.load(Ordering::SeqCst) {
+        logging::warn("timed out waiting for mitos-services to confirm shutdown, proceeding anyway");
+    }
+}
+
+/// Routes panic messages through our own logger (which reaches
+/// `/dev/kmsg` when available) instead of the default hook's plain
+/// stderr write. The release profile sets `panic = "abort"`, so there's
+/// no unwinding to interfere with - this just makes sure that if an
+/// unexpected panic ever *does* slip past the `Result`-based error
+/// handling everywhere else in this codebase, the reason ends up
+/// somewhere a `dmesg` after the fact can actually find it.
+fn install_panic_hook() {
+    std::panic::set_hook(Box::new(|info| {
+        logging::error(&format!("PANIC: {info}"));
+    }));
+}
+
 /// Syncs disks and asks the kernel to reboot/power off/halt, matching
 /// whichever `ShutdownKind` the event loop exited with. On real
-/// hardware/VMs running as actual PID 1 this doesn't return. Anywhere else
-/// (a dev container, running as a normal process) it fails with EPERM -
-/// that's expected there, and we just exit instead.
+/// hardware/VMs running as actual PID 1 this doesn't return. Anywhere
+/// else (a dev container, running as a normal process) it fails with
+/// EPERM - that's expected there, and we just exit instead.
 fn finish(kind: ShutdownKind) {
     logging::info("mitos-init halted");
     unsafe {
