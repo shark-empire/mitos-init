@@ -39,7 +39,7 @@ const SHUTDOWN_ACK_TIMEOUT: Duration = Duration::from_secs(20);
 
 fn main() {
     logging::init();
-        // Example: Check for a MITOS_LOG_LEVEL environment variable
+    // Example: Check for a MITOS_LOG_LEVEL environment variable
     if let Ok(level_str) = std::env::var("MITOS_LOG_LEVEL") {
         if let Some(level) = logging::Level::parse(&level_str) {
             logging::set_level(level);
