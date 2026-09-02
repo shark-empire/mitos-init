@@ -1,13 +1,15 @@
 [package]
 name = "mitos-init"
-version = "0.7.0"
+version = "0.10.0"
 edition = "2021"
 authors = ["Your Name <babor3331@gmail.com>"]
-description = "The PID 1 initialization system for MITOS"
+description = "The PID 1 initialization system for MITOS - mounts the kernel-facing filesystem tree and supervises mitos-services"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
-nix = { version = "0.27", features = ["process", "mount", "signal", "reboot", "hostname", "fs"] }
+# Notably shorter than before the mitos-services split: "hostname" moved
+# out with the config code that used it.
+nix = { version = "0.27", features = ["process", "mount", "signal", "reboot", "fs"] }
 libc = "0.2"
 
 # This binary is the very first thing the kernel loads off disk, and it
