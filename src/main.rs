@@ -116,7 +116,10 @@ fn run_rescue_only() {
 }
 
 fn create_ack_fifo() -> bool {
-    match nix::unistd::mkfifo(SHUTDOWN_ACK_FIFO, nix::sys::stat::Mode::from_bits_truncate(0o600)) {
+    match nix::unistd::mkfifo(
+        SHUTDOWN_ACK_FIFO,
+        nix::sys::stat::Mode::from_bits_truncate(0o600),
+    ) {
         Ok(()) => true,
         Err(nix::errno::Errno::EEXIST) => true,
         Err(e) => {
@@ -159,7 +162,9 @@ fn run_event_loop(have_fifo: bool) -> ShutdownKind {
     let mut services_pid = spawn_services();
     let mut restart_times: Vec<Instant> = Vec::new();
     if services_pid.is_none() {
-        logging::error("mitos-services couldn't be started at all - falling back to a rescue shell");
+        logging::error(
+            "mitos-services couldn't be started at all - falling back to a rescue shell",
+        );
         run_rescue_only();
     }
 
@@ -250,7 +255,9 @@ fn check_shutdown(services_pid: &mut Option<i32>, have_fifo: bool) -> Option<Shu
         return None;
     };
 
-    logging::info("shutdown requested - relaying to mitos-services and waiting for it to stop services");
+    logging::info(
+        "shutdown requested - relaying to mitos-services and waiting for it to stop services",
+    );
     relay(*services_pid, signal, "shutdown");
 
     if have_fifo {
@@ -284,7 +291,9 @@ fn wait_for_ack(timeout: Duration) {
         std::thread::sleep(Duration::from_millis(50));
     }
     if !acked.load(Ordering::SeqCst) {
-        logging::warn("timed out waiting for mitos-services to confirm shutdown, proceeding anyway");
+        logging::warn(
+            "timed out waiting for mitos-services to confirm shutdown, proceeding anyway",
+        );
     }
 }
 

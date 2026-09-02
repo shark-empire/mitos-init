@@ -38,7 +38,10 @@ pub fn log_boot() {
     let now = unsafe { libc::time(std::ptr::null_mut()) };
     // utmpx's timestamp field is glibc's internal `__timeval`, not the
     // usual public `timeval` - a distinct type despite matching fields.
-    entry.ut_tv = libc::__timeval { tv_sec: now as _, tv_usec: 0 };
+    entry.ut_tv = libc::__timeval {
+        tv_sec: now as _,
+        tv_usec: 0,
+    };
 
     unsafe {
         libc::setutxent();
@@ -59,7 +62,12 @@ fn append_to_wtmp(entry: &utmpx) {
         )
     };
 
-    match OpenOptions::new().create(true).append(true).mode(0o664).open(WTMP_PATH) {
+    match OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o664)
+        .open(WTMP_PATH)
+    {
         Ok(mut f) => {
             if let Err(e) = f.write_all(bytes) {
                 logging::debug(&format!("couldn't append to {WTMP_PATH}: {e}"));
