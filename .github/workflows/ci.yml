@@ -1,4 +1,4 @@
-name: mitos-init
+name: mitos-init-build
 
 on:
   push:
